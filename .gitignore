@@ -1,0 +1,11 @@
+Source Data
+.venv/
+.DS_Store
+*.db
+*-journal
+*-wal
+*-shm
+*-stmtjrnl
+*.pyc
+__pycache__/
+.mypy_cache/

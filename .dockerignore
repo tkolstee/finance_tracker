@@ -1,0 +1,16 @@
+__pycache__/
+.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+.env
+.venv/
+venv/
+.DS_Store
+*.db
+*-journal
+*-wal
+*-shm
+*-stmtjrnl

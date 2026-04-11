@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Finance Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+
+<!-- ── top nav ── -->
+<div class="topnav">
+  <h1><i class="bi bi-bar-chart-fill me-1"></i>Finance Tracker</h1>
+  <button class="nav-tab active" id="tab-monthly"  onclick="showView('monthly')">Monthly View</button>
+  <button class="nav-tab"        id="tab-template" onclick="showView('template')">Template Builder</button>
+  <button class="nav-tab"        id="tab-all"      onclick="showView('all')">All Transactions</button>
+  <span style="flex:1"></span>
+  {% if is_admin %}
+  <a href="/admin" style="color:var(--tx2);font-size:.78rem;text-decoration:none;padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'"><i class="bi bi-shield-lock me-1"></i>Admin</a>
+  {% endif %}
+  <span style="color:var(--tx2);font-size:.82rem;display:flex;align-items:center;gap:6px"><i class="bi bi-person-circle"></i>{{ current_user }}</span>
+  <button onclick="doLogout()" style="background:transparent;border:1px solid var(--bdr);border-radius:5px;color:var(--tx2);font-size:.8rem;padding:4px 10px;cursor:pointer;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'" title="Sign out"><i class="bi bi-box-arrow-right me-1"></i>Sign Out</button>
+</div>
+
+<!-- ══════════════ MONTHLY VIEW ══════════════ -->
+<div id="view-monthly" class="view active">
+
+  <!-- carousel -->
+  <div class="carousel-bar">
+    <button class="btn-ol btn-sm" onclick="shiftCarousel(-1)"><i class="bi bi-chevron-left"></i></button>
+    <div class="carousel-wrap"><div class="carousel-track" id="carousel-track"></div></div>
+    <button class="btn-ol btn-sm" onclick="shiftCarousel(1)"><i class="bi bi-chevron-right"></i></button>
+    <button class="btn-ol btn-sm" onclick="jumpToday()" title="Current month">Today</button>
+    <button class="btn-ol btn-sm" onclick="toggleJump()" title="Jump to date" id="jump-btn">
+      <i class="bi bi-calendar3"></i>
+    </button>
+    <div class="jump-popup" id="jump-popup">
+      <div class="jp-row">
+        <select class="jp-sel" id="jp-month"></select>
+        <select class="jp-sel" id="jp-year"></select>
+      </div>
+      <button class="btn-ac btn-sm" onclick="doJump()" style="align-self:flex-end">Go</button>
+    </div>
+  </div>
+
+  <!-- global balance strip -->
+  <div class="global-strip">
+    <span style="font-weight:600;color:var(--tx)">Current</span>
+    <span>Est <span class="gval" id="g-est">—</span></span>
+    <span>Act <span class="gval" id="g-act">—</span></span>
+    <span>Rec <span class="gval" id="g-rec">—</span></span>
+  </div>
+
+  <!-- compact monthly balance summary: 3 rows × (label + Est + Act + Rec) -->
+  <div class="balance-summary">
+    <div class="bs-corner"></div>
+    <div class="bs-hdr est-bg">Estimated</div>
+    <div class="bs-hdr act-bg">Actual</div>
+    <div class="bs-hdr rec-bg">Reconciled</div>
+    <div class="bs-lbl" id="bs-lbl-first">—</div>
+    <div class="bs-cell est-bg" id="bs-first-est-cell"></div>
+    <div class="bs-cell act-bg" id="bs-first-act-cell"></div>
+    <div class="bs-cell rec-bg" id="bs-first-rec-cell"></div>
+    <div class="bs-lbl">Net</div>
+    <div class="bs-cell est-bg"><span id="bs-net-est">—</span></div>
+    <div class="bs-cell act-bg"><span id="bs-net-act">—</span></div>
+    <div class="bs-cell rec-bg"><span id="bs-net-rec">—</span></div>
+    <div class="bs-lbl bs-no-bot" id="bs-lbl-last">—</div>
+    <div class="bs-cell est-bg bs-no-bot"><span id="bs-last-est">—</span></div>
+    <div class="bs-cell act-bg bs-no-bot"><span id="bs-last-act">—</span></div>
+    <div class="bs-cell rec-bg bs-no-bot"><span id="bs-last-rec">—</span></div>
+  </div>
+
+  <!-- daily balance chart -->
+  <div class="chart-panel" id="chart-panel">
+    <button class="chart-toggle" onclick="toggleChart()" id="chart-toggle-btn">
+      <i class="bi bi-chevron-up"></i> hide
+    </button>
+    <canvas id="bal-chart" style="width:100%;height:193px"></canvas>
+  </div>
+
+  <!-- toolbar -->
+  <div class="toolbar">
+    <button class="btn-ac btn-sm" onclick="initMonthFromTemplate()">
+      <i class="bi bi-lightning me-1"></i>Init from Template
+    </button>
+  </div>
+
+  <!-- transactions -->
+  <div class="scroll-content">
+    <div class="section-header">
+      <i class="bi bi-arrow-down-circle-fill" style="color:var(--gn)"></i>
+      Income <span class="section-sum" id="income-sum"></span>
+    </div>
+    <table class="txn-table" id="tbl-income"><thead><tr>
+      <th class="w-dt th-sort" data-sort="income-body:date">Date <span class="sort-icon" id="si-income-date">↑</span></th>
+      <th class="w-py th-sort" data-sort="income-body:payee">Source <span class="sort-icon" id="si-income-payee"></span></th>
+      <th class="w-ca th-sort" data-sort="income-body:category">Category <span class="sort-icon" id="si-income-category"></span></th>
+      <th class="w-am th-sort" data-sort="income-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-income-amount"></span></th>
+      <th class="w-no th-sort" data-sort="income-body:notes">Memo <span class="sort-icon" id="si-income-notes"></span></th>
+      <th class="w-st">Status</th>
+      <th class="w-fl" title="Auto"><i class="bi bi-lightning-fill"></i></th>
+      <th class="w-fl" title="Push to Template"><i class="bi bi-cloud-upload"></i></th>
+      <th class="w-de"></th>
+    </tr></thead>
+    <tbody id="income-body"></tbody>
+    <tfoot><tr class="ghost-row">
+      <td><input class="ghost-inp" id="gi-inc-date" type="number" min="1" max="31" placeholder="Day"></td>
+      <td><input class="ghost-inp" id="gi-inc-payee" type="text" placeholder="Source"></td>
+      <td><input class="ghost-inp" id="gi-inc-cat" type="text" placeholder="Category"></td>
+      <td><input class="ghost-inp" id="gi-inc-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
+      <td><input class="ghost-inp" id="gi-inc-notes" type="text" placeholder="Memo"></td>
+      <td colspan="3"></td>
+      <td><button class="ghost-commit-btn" onclick="commitGhostMonthly('credit')" title="Add row (Enter)">⮐</button></td>
+    </tr></tfoot></table>
+
+    <div class="section-header" style="margin-top:1px">
+      <i class="bi bi-arrow-up-circle-fill" style="color:var(--rd)"></i>
+      Expenses <span class="section-sum" id="expense-sum"></span>
+    </div>
+    <table class="txn-table" id="tbl-expense"><thead><tr>
+      <th class="w-dt th-sort" data-sort="expense-body:date">Date <span class="sort-icon" id="si-expense-date">↑</span></th>
+      <th class="w-py th-sort" data-sort="expense-body:payee">Payee <span class="sort-icon" id="si-expense-payee"></span></th>
+      <th class="w-ca th-sort" data-sort="expense-body:category">Category <span class="sort-icon" id="si-expense-category"></span></th>
+      <th class="w-am th-sort" data-sort="expense-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-expense-amount"></span></th>
+      <th class="w-no th-sort" data-sort="expense-body:notes">Memo <span class="sort-icon" id="si-expense-notes"></span></th>
+      <th class="w-st">Status</th>
+      <th class="w-fl" title="Auto"><i class="bi bi-lightning-fill"></i></th>
+      <th class="w-fl" title="Push to Template"><i class="bi bi-cloud-upload"></i></th>
+      <th class="w-de"></th>
+    </tr></thead>
+    <tbody id="expense-body"></tbody>
+    <tfoot><tr class="ghost-row">
+      <td><input class="ghost-inp" id="gi-exp-date" type="number" min="1" max="31" placeholder="Day"></td>
+      <td><input class="ghost-inp" id="gi-exp-payee" type="text" placeholder="Payee"></td>
+      <td><input class="ghost-inp" id="gi-exp-cat" type="text" placeholder="Category"></td>
+      <td><input class="ghost-inp" id="gi-exp-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
+      <td><input class="ghost-inp" id="gi-exp-notes" type="text" placeholder="Memo"></td>
+      <td colspan="3"></td>
+      <td><button class="ghost-commit-btn" onclick="commitGhostMonthly('debit')" title="Add row (Enter)">⮐</button></td>
+    </tr></tfoot></table>
+
+    <div style="height:40px"></div>
+  </div>
+</div><!-- /monthly -->
+
+<!-- ══════════════ TEMPLATE BUILDER ══════════════ -->
+<div id="view-template" class="view">
+  <div class="toolbar">
+    <span style="font-weight:600">Template Builder</span>
+    <span style="font-size:12px;color:var(--mu)">— Recurring items used when initializing a new month</span>
+    <div class="net-display">
+      <span class="net-lbl">Net:</span>
+      <span id="template-net">—</span>
+    </div>
+  </div>
+  <div class="scroll-content">
+    <div class="section-header">
+      <i class="bi bi-arrow-down-circle-fill" style="color:var(--gn)"></i> Income Templates
+    </div>
+    <table class="tmpl-table"><thead><tr>
+      <th style="width:190px" class="th-sort" data-sort="tmpl-income-body:payee">Source <span class="sort-icon" id="si-tmpl-income-payee"></span></th>
+      <th style="width:150px" class="th-sort" data-sort="tmpl-income-body:category">Category <span class="sort-icon" id="si-tmpl-income-category"></span></th>
+      <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-income-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-income-day">↑</span></th>
+      <th style="width:110px;text-align:right" class="th-sort" data-sort="tmpl-income-body:amount">Amount <span class="sort-icon" id="si-tmpl-income-amount"></span></th>
+      <th style="width:90px;text-align:center">Auto Pay</th>
+      <th>Notes</th><th style="width:30px"></th>
+    </tr></thead>
+    <tbody id="tmpl-income-body"></tbody>
+    <tfoot><tr class="ghost-row">
+      <td><input class="ghost-inp" id="gt-inc-payee" type="text" placeholder="Source"></td>
+      <td><input class="ghost-inp" id="gt-inc-cat" type="text" placeholder="Category"></td>
+      <td><input class="ghost-inp" id="gt-inc-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>
+      <td><input class="ghost-inp" id="gt-inc-amount" type="number" min="0" step="0.01" placeholder="0.00" style="text-align:right"></td>
+      <td style="text-align:center"><select class="ghost-inp ghost-sel" id="gt-inc-auto">
+        <option value="0">Manual</option>
+        <option value="1">Auto</option>
+      </select></td>
+      <td><input class="ghost-inp" id="gt-inc-notes" type="text" placeholder="Memo"></td>
+      <td><button class="ghost-commit-btn" onclick="commitGhostTmpl('credit')" title="Add row (Enter)">⮐</button></td>
+    </tr></tfoot></table>
+
+    <div class="section-header" style="margin-top:1px">
+      <i class="bi bi-arrow-up-circle-fill" style="color:var(--rd)"></i> Expense Templates
+    </div>
+    <table class="tmpl-table"><thead><tr>
+      <th style="width:190px" class="th-sort" data-sort="tmpl-expense-body:payee">Payee <span class="sort-icon" id="si-tmpl-expense-payee"></span></th>
+      <th style="width:150px" class="th-sort" data-sort="tmpl-expense-body:category">Category <span class="sort-icon" id="si-tmpl-expense-category"></span></th>
+      <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-expense-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-expense-day">↑</span></th>
+      <th style="width:110px;text-align:right" class="th-sort" data-sort="tmpl-expense-body:amount">Amount <span class="sort-icon" id="si-tmpl-expense-amount"></span></th>
+      <th style="width:90px;text-align:center">Auto Pay</th>
+      <th>Notes</th><th style="width:30px"></th>
+    </tr></thead>
+    <tbody id="tmpl-expense-body"></tbody>
+    <tfoot><tr class="ghost-row">
+      <td><input class="ghost-inp" id="gt-exp-payee" type="text" placeholder="Payee"></td>
+      <td><input class="ghost-inp" id="gt-exp-cat" type="text" placeholder="Category"></td>
+      <td><input class="ghost-inp" id="gt-exp-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>
+      <td><input class="ghost-inp" id="gt-exp-amount" type="number" min="0" step="0.01" placeholder="0.00" style="text-align:right"></td>
+      <td style="text-align:center"><select class="ghost-inp ghost-sel" id="gt-exp-auto">
+        <option value="0">Manual</option>
+        <option value="1">Auto</option>
+      </select></td>
+      <td><input class="ghost-inp" id="gt-exp-notes" type="text" placeholder="Memo"></td>
+      <td><button class="ghost-commit-btn" onclick="commitGhostTmpl('debit')" title="Add row (Enter)">⮐</button></td>
+    </tr></tfoot></table>
+    <div style="height:40px"></div>
+  </div>
+</div><!-- /template -->
+
+<!-- ══════════════ ALL TRANSACTIONS VIEW ══════════════ -->
+<div id="view-all" class="view">
+  <div class="toolbar">
+    <span style="font-weight:600">All Transactions</span>
+    <span style="font-size:12px;color:var(--mu)">— All months combined</span>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <span id="all-result-count" style="font-size:11px;color:var(--mu)"></span>
+      <button class="btn-ol btn-sm" onclick="exportAllCSV()" title="Export visible rows to CSV">
+        <i class="bi bi-download"></i> Export CSV
+      </button>
+      <button class="btn-ol btn-sm" id="all-filter-btn" onclick="toggleAllFilterBar()">
+        <i class="bi bi-funnel"></i> Filter<span class="filter-badge" id="all-filter-badge" style="display:none"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- all-transactions chart -->
+  <div class="chart-panel" id="all-chart-panel">
+    <div class="all-chart-controls">
+      <div class="ftoggle-group">
+        <button class="ftoggle-btn active" id="ac-scope-all" onclick="setAllChartScope('all')">All transactions</button>
+        <button class="ftoggle-btn" id="ac-scope-vis" onclick="setAllChartScope('filtered')">Visible only</button>
+      </div>
+    </div>
+    <button class="chart-toggle" onclick="toggleAllChart()" id="all-chart-toggle-btn">
+      <i class="bi bi-chevron-up"></i> hide
+    </button>
+    <canvas id="all-bal-chart" style="width:100%;height:193px"></canvas>
+  </div>
+
+  <!-- filter bar (hidden until toggled) -->
+  <div class="filter-bar" id="all-filter-bar">
+    <div class="filter-row">
+
+      <!-- search -->
+      <div class="filter-group">
+        <label>Search</label>
+        <input class="filter-input" type="text" id="af-search" placeholder="Payee, category, memo…" oninput="onAllFilterChange()">
+      </div>
+
+      <!-- date range -->
+      <div class="filter-group">
+        <label>From</label>
+        <input class="filter-input" type="date" id="af-from" onchange="onAllFilterChange()">
+      </div>
+      <div class="filter-group">
+        <label>To</label>
+        <input class="filter-input" type="date" id="af-to" onchange="onAllFilterChange()">
+      </div>
+
+      <!-- category multi-select -->
+      <div class="filter-group">
+        <label>Category</label>
+        <div class="fcat-wrap" id="af-cat-wrap">
+          <button class="fcat-btn" id="af-cat-btn" onclick="toggleAllCatDropdown(event)">
+            <span id="af-cat-label">All categories</span>
+            <i class="bi bi-chevron-down" style="font-size:10px;margin-left:auto"></i>
+          </button>
+          <div class="fcat-list" id="af-cat-list"></div>
+        </div>
+      </div>
+
+      <!-- status toggles -->
+      <div class="filter-group">
+        <label>Status</label>
+        <div class="ftoggle-group">
+          <button class="ftoggle-btn" id="af-st-estimated" onclick="toggleAllStatus('estimated')">Est</button>
+          <button class="ftoggle-btn" id="af-st-actual"    onclick="toggleAllStatus('actual')">Act</button>
+          <button class="ftoggle-btn" id="af-st-reconciled" onclick="toggleAllStatus('reconciled')">Rec</button>
+        </div>
+      </div>
+
+      <!-- entry type -->
+      <div class="filter-group">
+        <label>Type</label>
+        <div class="ftoggle-group">
+          <button class="ftoggle-btn on" id="af-ty-both"   onclick="setAllEntryType('both')">All</button>
+          <button class="ftoggle-btn"    id="af-ty-credit" onclick="setAllEntryType('credit')">Income</button>
+          <button class="ftoggle-btn"    id="af-ty-debit"  onclick="setAllEntryType('debit')">Expenses</button>
+        </div>
+      </div>
+
+      <!-- amount range -->
+      <div class="filter-group">
+        <label>Min $</label>
+        <input class="filter-input" type="number" id="af-min" min="0" step="0.01" placeholder="0" oninput="onAllFilterChange()">
+      </div>
+      <div class="filter-group">
+        <label>Max $</label>
+        <input class="filter-input" type="number" id="af-max" min="0" step="0.01" placeholder="any" oninput="onAllFilterChange()">
+      </div>
+
+      <button class="btn-ol btn-sm" onclick="clearAllFilters()" style="align-self:flex-end;height:26px">
+        <i class="bi bi-x-lg"></i> Clear
+      </button>
+    </div>
+  </div>
+
+  <div class="scroll-content">
+    <table class="txn-table" id="tbl-all"><thead><tr>
+      <th class="w-dt-full th-sort" data-sort="all-body:date">Date <span class="sort-icon" id="si-all-date">↑</span></th>
+      <th class="w-etype th-sort" data-sort="all-body:entry_type">Type <span class="sort-icon" id="si-all-entry_type"></span></th>
+      <th class="w-py th-sort" data-sort="all-body:payee">Payee <span class="sort-icon" id="si-all-payee"></span></th>
+      <th class="w-ca th-sort" data-sort="all-body:category">Category <span class="sort-icon" id="si-all-category"></span></th>
+      <th class="w-am th-sort" data-sort="all-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-all-amount"></span></th>
+      <th class="w-no th-sort" data-sort="all-body:notes">Memo <span class="sort-icon" id="si-all-notes"></span></th>
+      <th class="w-st">Status</th>
+      <th class="w-fl" title="Auto"><i class="bi bi-lightning-fill"></i></th>
+      <th class="w-fl" title="Push to Template"><i class="bi bi-cloud-upload"></i></th>
+      <th class="w-de"></th>
+    </tr></thead>
+    <tbody id="all-body"></tbody>
+    <tfoot><tr class="ghost-row">
+      <td><input class="ghost-inp" id="gia-date" type="date"></td>
+      <td><select class="ghost-inp ghost-sel" id="gia-type">
+        <option value="debit">Expense</option>
+        <option value="credit">Income</option>
+      </select></td>
+      <td><input class="ghost-inp" id="gia-payee" type="text" placeholder="Payee"></td>
+      <td><input class="ghost-inp" id="gia-cat" type="text" placeholder="Category"></td>
+      <td><input class="ghost-inp" id="gia-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
+      <td><input class="ghost-inp" id="gia-notes" type="text" placeholder="Memo"></td>
+      <td colspan="3"></td>
+      <td><button class="ghost-commit-btn" onclick="commitGhostAll()" title="Add row (Enter)">⮐</button></td>
+    </tr></tfoot></table>
+    <div style="height:40px"></div>
+  </div>
+</div><!-- /all -->
+
+<!-- ── Init modal ── -->
+<div class="modal-bg" id="init-modal">
+  <div class="modal-box">
+    <h4><i class="bi bi-lightning-fill me-2" style="color:var(--ac)"></i>Initialize from Template</h4>
+    <p id="init-modal-desc"></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-ac" onclick="doInit('replace_all')">Replace All</button>
+      <button class="btn-ol" onclick="doInit('merge')">Keep &amp; Merge</button>
+      <button class="btn-ol" onclick="closeModal('init-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="conn-modal">
+  <div class="modal-box conn-modal-box">
+    <h4><i class="bi bi-wifi-off me-2" style="color:var(--am)"></i>Connection Lost</h4>
+    <p>Cannot reach the service right now. Please wait to see if it reconnects...</p>
+    <p id="conn-modal-extra" style="display:none">Still trying to reconnect. If this continues, try reloading the page.</p>
+  </div>
+</div>
+
+<div class="toast-area" id="ta"></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
