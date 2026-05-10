@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ config.APP_VERSION }}-payees4">
 </head>
 <body>
 
@@ -17,6 +17,7 @@
   <button class="nav-tab active" id="tab-monthly"  onclick="showView('monthly')">Monthly View</button>
   <button class="nav-tab"        id="tab-template" onclick="showView('template')">Template Builder</button>
   <button class="nav-tab"        id="tab-all"      onclick="showView('all')">All Transactions</button>
+  <button class="nav-tab"        id="tab-payees"   onclick="showView('payees')">Payees</button>
   <span style="flex:1"></span>
   {% if is_admin %}
   <a href="/admin" style="color:var(--tx2);font-size:.78rem;text-decoration:none;padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'"><i class="bi bi-shield-lock me-1"></i>Admin</a>
@@ -363,6 +364,44 @@
 
 <div class="toast-area" id="ta"></div>
 
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<!-- Payees view (full page) -->
+<div id="view-payees" class="view">
+  <div class="toolbar">
+    <span style="font-weight:600">Payees</span>
+    <span style="font-size:12px;color:var(--mu);margin-left:8px">— Select payees to display</span>
+  </div>
+  <div class="payees-content">
+    <aside class="payees-sidebar">
+      <div style="padding:10px 12px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px">From</label>
+          <input class="filter-input" type="month" id="payees-from" onchange="renderPayeesView()">
+          <label style="font-size:12px">To</label>
+          <input class="filter-input" type="month" id="payees-to" onchange="renderPayeesView()">
+          <button class="btn-ol btn-sm" type="button" onclick="resetPayeesDateRange()">Reset</button>
+        </div>
+      </div>
+      <div class="payees-list" id="payees-list" style="padding:8px;"></div>
+    </aside>
+    <main class="payees-main">
+      <div class="chart-panel payees-chart-panel">
+        <canvas id="payees-bar-chart"></canvas>
+      </div>
+      <div style="padding:10px 14px;flex:1;overflow:auto">
+        <table class="txn-table"><thead><tr>
+          <th style="width:120px">Date</th>
+          <th style="width:80px">Type</th>
+          <th>Payee</th>
+          <th>Category</th>
+          <th style="text-align:right">Amount</th>
+          <th>Notes</th>
+        </tr></thead>
+        <tbody id="payees-body"></tbody></table>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees4"></script>
 </body>
 </html>
