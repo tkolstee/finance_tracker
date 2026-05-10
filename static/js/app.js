@@ -6,6 +6,12 @@ let payeeBadges   = {}, tmplBadges = {};
 let balChart      = null;
 let chartVisible  = true;
 let payeeDefaults = {};
+// Payees view state
+const PAYEE_COLORS = [
+  '#4f7ef8','#22c55e','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#fb7185','#f97316',
+  '#10b981','#6366f1','#ef9a9a','#60a5fa'
+];
+let payeesState = { colors:{}, selected:new Set(), order:[] };
 
 // All-transactions view state
 let allTransactions   = [];
@@ -350,11 +356,14 @@ function showView(v){
   document.getElementById('view-monthly').classList.toggle('active', v==='monthly');
   document.getElementById('view-template').classList.toggle('active', v==='template');
   document.getElementById('view-all').classList.toggle('active', v==='all');
+  document.getElementById('view-payees')?.classList.toggle('active', v==='payees');
   document.getElementById('tab-monthly').classList.toggle('active', v==='monthly');
   document.getElementById('tab-template').classList.toggle('active', v==='template');
   document.getElementById('tab-all').classList.toggle('active', v==='all');
+  document.getElementById('tab-payees')?.classList.toggle('active', v==='payees');
   if(v==='template') loadTemplates();
   if(v==='all') loadAllTransactions();
+  if(v==='payees') loadPayeesView();
 }
 
 // ═══════════ CAROUSEL ═══════════
@@ -1058,15 +1067,144 @@ function makePayeeSpan(txn, section){
   span.textContent=txn.payee||'';
   const total=section.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type).length;
   if(total>1){
-    const b=document.createElement('span');
-    b.className='pbadge'; b.textContent='#'+(payeeBadges[txn.id]||1);
+    const b=document.createElement('span'); b.className='pbadge'; b.textContent='#'+(payeeBadges[txn.id]||1);
     span.appendChild(b);
   }
   return span;
 }
 
+function makePayeeAllSpan(txn,section){
+  const span=document.createElement('span');
+  span.textContent=txn.payee||'';
+  const total=section.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type).length;
+  if(total>1){
+    const b=document.createElement('span'); b.className='pbadge'; b.textContent='#'+(allPayeeBadges[txn.id]||1);
+    span.appendChild(b);
+  }
+  // no inline click — use Payees view tab to explore payees
+  return span;
+  }
+
 function makeEC(txn, field, type, extraClass, section){
   const td=document.createElement('td');
+  td.className='editable '+(extraClass||'');
+  let span;
+  if(field==='payee'&&section) span=makePayeeSpan(txn,section);
+  else{
+    span=document.createElement('span');
+    if(field==='amount'){
+      span.innerHTML=fmtTxnAmt(txn.amount, txn.entry_type);
+    }else if(field==='entry_type'){
+      span.textContent=txn.entry_type==='credit'?'Income':'Expense';
+    }else if(field==='date'){
+      span.textContent=txn.date?String(parseInt(txn.date.slice(8),10)):'';
+    }else{ span.textContent=txn[field]||''; }
+  }
+  td.appendChild(span);
+
+  td.onclick=e=>{
+    if(td.querySelector('input,select')) return;
+    editingTxnId=txn.id;
+    span.style.display='none';
+    let el;
+
+    const repaintStatic=()=>{
+      const latest=getTxnById(txn.id) || txn;
+      if(field==='payee'&&section){
+        span.replaceWith(makePayeeSpan(latest, section));
+        span = td.querySelector('span');
+      }else if(field==='amount'){
+        span.innerHTML=fmtTxnAmt(latest.amount, latest.entry_type);
+      }else if(field==='entry_type'){
+        span.textContent=latest.entry_type==='credit'?'Income':'Expense';
+      }else if(field==='date'){
+        span.textContent=latest.date?String(parseInt(latest.date.slice(8),10)):'';
+      }else{
+        span.textContent=latest[field]||'';
+      }
+    };
+
+    const closeEditor=()=>{
+      if(el&&el.parentNode===td) el.remove();
+      repaintStatic();
+      span.style.display='';
+      editingTxnId=null;
+    };
+
+    const makeOnTab=(shiftKey)=>{
+      el.onblur=null; _hideAC();
+      doSave();
+      closeEditor();
+      const t=getNextTxnTarget(td,shiftKey);
+      if(t && t.type!=='ghost') setTimeout(()=>applyTxnTarget(t),80);
+    };
+
+    if(field==='category'){
+      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
+      acBind(el, ()=>[...categories].sort(), v=>{ el.value=v; }, makeOnTab);
+    }else if(field==='payee'){
+      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
+      acBind(el, ()=>[...payees].sort(), v=>{ el.value=v; }, makeOnTab);
+    }else if(field==='entry_type'){
+      el=document.createElement('select'); el.className='cell-select';
+      ['credit','debit'].forEach(v=>{
+        const o=document.createElement('option'); o.value=v;
+        o.textContent=v==='credit'?'Income':'Expense';
+        if(v===txn[field]) o.selected=true; el.appendChild(o);});
+    }else if(field==='date'){
+      el=document.createElement('input'); el.type='number'; el.className='cell-input';
+      el.style.width='48px'; el.style.textAlign='center';
+      const [yr,mo]=currentMonth.split('-');
+      const lastDay=new Date(+yr,+mo,0).getDate();
+      el.min='1'; el.max=String(lastDay);
+      el.value=txn.date?String(parseInt(txn.date.slice(8),10)):'';
+    }else{
+      el=document.createElement('input'); el.type=type||'text'; el.className='cell-input';
+      el.value=field==='amount'?txn.amount.toFixed(2):(txn[field]||'');
+    }
+    td.appendChild(el); el.focus();
+    if(el.tagName==='INPUT'){try{el.select()}catch(x){}}
+
+    const doSave=()=>{
+      let v=field==='amount'?parseFloat(el.value)||0:el.value;
+      if(field==='date'&&v){
+        const [yr,mo]=currentMonth.split('-');
+        const lastDay=new Date(+yr,+mo,0).getDate();
+        const day=Math.min(Math.max(1,parseInt(v,10)||1),lastDay);
+        v=`${currentMonth}-${String(day).padStart(2,'0')}`;
+      }
+      const latest=getTxnById(txn.id) || txn;
+      if(valuesEqual(field, latest[field], v)) return false;
+      if(field==='category'&&v) addCat(v);
+      if(field==='payee'&&v) addPayee(v);
+      updateField(txn.id,field,v);
+      return true;
+    };
+    el.onblur=()=>{ _hideAC(); doSave(); closeEditor(); };
+    el.onkeydown=ev=>{
+      if(ev.key==='Escape'){
+        ev.preventDefault();el.onblur=null;_hideAC();closeEditor();
+        return;
+      }
+      if(ev.key==='Tab'){
+        ev.preventDefault();
+        _acPickFromInput(el);
+        makeOnTab(ev.shiftKey);
+        return;
+      }
+      if(ev.key==='Enter'){
+        ev.preventDefault();
+        if(_acDrop && _acPickFromInput(el)){ makeOnTab(false); return; }
+        el.blur();
+      }
+    };
+    e.stopPropagation();
+  };
+  return td;
+}
+
+  function makeAllEC(txn,field,type,extraClass,section){
+    const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
   let span;
   if(field==='payee'&&section) span=makePayeeSpan(txn,section);
@@ -1330,6 +1468,189 @@ async function doInit(mode){
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 
+// ── Payees full view implementation ───────────────────────────────────────
+let payeesChart = null;
+let payeesDateDefaults = {from:'', to:''};
+
+function pad2(n){ return String(n).padStart(2,'0'); }
+
+function dateToMonthValue(dateStr){
+  return dateStr ? String(dateStr).slice(0, 7) : '';
+}
+
+function monthValueToStartDate(monthValue){
+  if(!monthValue) return '';
+  const [year, month] = monthValue.split('-').map(Number);
+  if(!year || !month) return '';
+  return `${year}-${pad2(month)}-01`;
+}
+
+function monthValueToEndDate(monthValue){
+  if(!monthValue) return '';
+  const [year, month] = monthValue.split('-').map(Number);
+  if(!year || !month) return '';
+  const lastDay = new Date(year, month, 0).getDate();
+  return `${year}-${pad2(month)}-${pad2(lastDay)}`;
+}
+
+function getPayeesMonthRangeMeta(from, to){
+  if(!from || !to) return {monthCount: 0};
+  const [fromYear, fromMonth] = from.split('-').map(Number);
+  const [toYear, toMonth] = to.split('-').map(Number);
+  if(!fromYear || !fromMonth || !toYear || !toMonth) return {monthCount: 0};
+  const months = (toYear - fromYear) * 12 + (toMonth - fromMonth) + 1;
+  return {monthCount: Math.max(1, months)};
+}
+
+function getPayeesDateBounds(){
+  const fromValue = document.getElementById('payees-from')?.value || payeesDateDefaults.from || '';
+  const toValue = document.getElementById('payees-to')?.value || payeesDateDefaults.to || '';
+  return {
+    fromValue,
+    toValue,
+    fromDate: monthValueToStartDate(fromValue),
+    toDate: monthValueToEndDate(toValue),
+  };
+}
+
+async function loadPayeesView(){
+  // Ensure we've loaded the payee and transaction data before building the list.
+  if(!allTransactions || allTransactions.length===0){
+    const [txns, payeeList] = await Promise.all([
+      resilientApiFetch('/api/transactions/all').then(r=>r.json()),
+      resilientApiFetch('/api/payees').then(r=>r.json()).catch(()=>[]),
+    ]);
+    allTransactions = txns || [];
+    if(payeesState.order.length===0){
+      payeesState.order = [...new Set((payeeList||[]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    }
+  }
+  // build payee ordering if empty from the loaded transactions
+  const names = [...new Set((allTransactions||[]).map(t=>t.payee).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  if(payeesState.order.length===0) payeesState.order = names;
+  if(payeesState.order.length===0){
+    payeesState.order = [...new Set((payees||[]).values())].sort((a,b)=>a.localeCompare(b));
+  }
+  // assign colors
+  payeesState.order.forEach((p,i)=>{ if(!payeesState.colors[p]) payeesState.colors[p]=PAYEE_COLORS[i%PAYEE_COLORS.length]; });
+
+  const dates = (allTransactions||[]).map(t=>t.date).filter(Boolean).sort();
+  const fromEl = document.getElementById('payees-from');
+  const toEl   = document.getElementById('payees-to');
+  payeesDateDefaults = {
+    from: dates.length ? dateToMonthValue(dates[0]) : '',
+    to: dates.length ? dateToMonthValue(dates[dates.length-1]) : '',
+  };
+  if(fromEl && !fromEl.value && payeesDateDefaults.from) fromEl.value = payeesDateDefaults.from;
+  if(toEl && !toEl.value && payeesDateDefaults.to) toEl.value = payeesDateDefaults.to;
+
+  buildPayeesList();
+  renderPayeesView();
+}
+
+function resetPayeesDateRange(){
+  const fromEl = document.getElementById('payees-from');
+  const toEl   = document.getElementById('payees-to');
+  if(fromEl) fromEl.value = payeesDateDefaults.from || '';
+  if(toEl) toEl.value = payeesDateDefaults.to || '';
+  renderPayeesView();
+}
+
+function getPayeesRangeMeta(from, to){
+  return getPayeesMonthRangeMeta(from, to);
+}
+
+function getPayeeStats(payee, labels, dateSet){
+  const total = (allTransactions||[]).reduce((sum, t)=>{
+    if(t.payee !== payee || !t.date || !dateSet.has(t.date)) return sum;
+    return sum + Math.abs(parseFloat(t.amount||0));
+  }, 0);
+  return total;
+}
+
+function buildPayeesList(){
+  const wrap=document.getElementById('payees-list'); if(!wrap) return; wrap.innerHTML='';
+  const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
+  const rangeRows = (allTransactions||[]).filter(t=>t.date && (!fromDate || t.date>=fromDate) && (!toDate || t.date<=toDate));
+  const dateSet = new Set(rangeRows.map(t=>t.date));
+  const {monthCount} = getPayeesRangeMeta(fromValue, toValue);
+  payeesState.order.forEach(p=>{
+    const row=document.createElement('div'); row.className='payee-item';
+    const chk=document.createElement('input'); chk.type='checkbox'; chk.checked=payeesState.selected.has(p);
+    chk.onchange=()=>{ if(chk.checked) payeesState.selected.add(p); else payeesState.selected.delete(p); renderPayeesView(); };
+    const sw=document.createElement('div'); sw.className='payee-color'; sw.style.backgroundColor=payeesState.colors[p]||'#888';
+    const lbl=document.createElement('div'); lbl.className='payee-name'; lbl.textContent=p;
+    const stats=document.createElement('div'); stats.className='payee-stats';
+    const total=getPayeeStats(p, rangeRows, dateSet);
+    const avg=monthCount ? total / monthCount : 0;
+    stats.innerHTML = `<span class="payee-total">${fmt(total)}</span><span class="payee-avg">${fmt(avg)}/mo</span>`;
+    row.appendChild(chk); row.appendChild(sw); row.appendChild(lbl); row.appendChild(stats); wrap.appendChild(row);
+  });
+}
+
+function renderPayeesView(){
+  const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
+  // determine date bounds
+  let minDate = fromDate, maxDate = toDate;
+  const rows = (allTransactions||[]).filter(t=>t.date && (!minDate || t.date>=minDate) && (!maxDate || t.date<=maxDate));
+  if(!minDate && rows.length) minDate = rows.map(r=>r.date).sort()[0];
+  if(!maxDate && rows.length) maxDate = rows.map(r=>r.date).sort().reverse()[0];
+  if(!minDate || !maxDate){ if(payeesChart){ payeesChart.destroy(); payeesChart=null; } document.getElementById('payees-body').innerHTML=''; return; }
+  // aggregate data by month between minDate and maxDate
+  const s = new Date(minDate), e = new Date(maxDate);
+  const startYear = s.getFullYear(), startMonth = s.getMonth();
+  const endYear = e.getFullYear(), endMonth = e.getMonth();
+  const monthsCount = (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
+  const labels = [];
+  for(let i=0;i<monthsCount;i++){ const d = new Date(startYear, startMonth + i, 1); labels.push(d.toISOString().slice(0,10)); }
+  // selected payees and datasets aggregated per month
+  const selected = [...payeesState.selected];
+  const datasets = selected.map((p, idx)=>{
+    const data = labels.map(l=>0);
+    const monthMap = new Map(labels.map((l,i)=>[l.slice(0,7), i]));
+    for(const t of allTransactions||[]){ if(t.payee===p && t.date){ const key = t.date.slice(0,7); const i = monthMap.get(key); if(i!==undefined && i>=0 && i<data.length) data[i] += Math.abs(parseFloat(t.amount||0)); } }
+    return { label:p, data, backgroundColor: payeesState.colors[p]||PAYEE_COLORS[idx%PAYEE_COLORS.length], stack:'s1' };
+  });
+  const ctx = document.getElementById('payees-bar-chart').getContext('2d');
+  if(payeesChart) payeesChart.destroy();
+  payeesChart = new Chart(ctx, {
+    type:'bar', data:{ labels: labels, datasets },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{legend:{position:'top'}},
+      scales:{
+        x:{
+          stacked:true,
+          ticks:{
+            maxRotation:0,
+            minRotation:0,
+            autoSkip:true,
+            maxTicksLimit:12,
+            callback:(tickValue, index)=>{
+              const label = labels[index] || '';
+              return label ? label.slice(0,7) : '';
+            }
+          },
+          grid:{
+            // vertical grid lines at each month
+            color: 'rgba(0,0,0,0.03)',
+            drawTicks:false,
+            borderDash:[2,2]
+          }
+        },
+        y:{ stacked:true, beginAtZero:true }
+      }
+    }
+  });
+  // render txn list
+  const tb=document.getElementById('payees-body'); tb.innerHTML='';
+  const visible = (allTransactions||[]).filter(t=>payeesState.selected.has(t.payee) && t.date && t.date>=labels[0] && t.date<=labels[labels.length-1])
+                   .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||a.id-b.id);
+  for(const t of visible){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${t.date}</td><td>${t.entry_type==='credit'?'Income':'Expense'}</td><td>${t.payee}</td><td>${t.category||''}</td><td style="text-align:right">${fmt(t.amount)}</td><td>${t.notes||''}</td>`; tb.appendChild(tr); }
+  buildPayeesList();
+}
+
 // ═══════════ TEMPLATE BUILDER ═══════════
 async function loadTemplates(){
   // Reset template sort state on each view open
@@ -1561,17 +1882,6 @@ function pushStatusAll(txn){
 }
 
 // ── Cell builders for all-transactions view ──────────────────────────────────
-function makePayeeAllSpan(txn,section){
-  const span=document.createElement('span');
-  span.textContent=txn.payee||'';
-  const total=section.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type).length;
-  if(total>1){
-    const b=document.createElement('span');
-    b.className='pbadge';b.textContent='#'+(allPayeeBadges[txn.id]||1);span.appendChild(b);
-  }
-  return span;
-}
-
 function makeAllEC(txn,field,type,extraClass,section){
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');

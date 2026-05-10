@@ -9,10 +9,10 @@
 - [ ] Add reconcile-focused filtered view (paid but not reconciled)
 - [ ] Add account history drill-down from payee/category
 - [x] Improve advanced search, sorting, and filtering
+- [x] User authentication and multi-user support
 
 ## Wish List
 
-- User authentication and multi-user support
 - Feature flags and richer metadata model
 - Debt and liability tracking (loans, cards, mortgage)
 - Multiple accounts and multi-currency support

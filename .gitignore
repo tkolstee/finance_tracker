@@ -9,3 +9,4 @@ Source Data
 *.pyc
 __pycache__/
 .mypy_cache/
+secret.key
