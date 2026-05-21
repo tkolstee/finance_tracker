@@ -116,6 +116,8 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
               color:var(--mu);border-bottom:1px solid var(--bd);white-space:nowrap;
               background:var(--sf);position:sticky;top:0;z-index:2}
 .txn-table td{padding:3px 5px;border-bottom:1px solid rgba(44,47,62,.45);vertical-align:middle}
+.account-col{display:none}
+body.show-account-cols .account-col{display:table-cell}
 .txn-row:hover:not(.ghost-row) td{background:rgba(255,255,255,.022)}
 .ghost-row td{color:var(--mu);font-style:italic;cursor:pointer;
               border-bottom:1px dashed rgba(44,47,62,.7)}
@@ -202,6 +204,20 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 .net-display{margin-left:auto;font-size:12px;color:var(--mu);display:flex;align-items:center;gap:6px}
 .net-display .net-lbl{font-weight:600}
 
+/* accounts manager */
+.accounts-shell{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;flex:1;min-height:0;padding:12px 14px;overflow:hidden}
+.accounts-panel{display:flex;flex-direction:column;min-height:0;border:1px solid var(--bd);border-radius:10px;background:var(--bg);overflow:hidden}
+.accounts-form-panel{max-width:420px}
+.accounts-form{display:flex;flex-direction:column;gap:8px;padding:12px 14px;overflow:auto}
+.accounts-form label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mu)}
+.account-form-input{width:100%}
+.accounts-table td,.accounts-table th{vertical-align:middle}
+
+@media (max-width: 1100px){
+        .accounts-shell{grid-template-columns:1fr}
+        .accounts-form-panel{max-width:none}
+}
+
 /* template table */
 .tmpl-table{width:100%;border-collapse:collapse}
 .tmpl-table th{padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:.4px;
@@ -216,7 +232,7 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 
 /* col widths */
 .w-dt{width:100px}.w-dt-full{width:122px}.w-etype{width:80px}.w-py{min-width:140px}.w-ca{min-width:110px}
-.w-no{min-width:170px}
+.w-ac{width:130px}.w-no{min-width:170px}
 .w-am{width:105px}.w-st{width:162px}
 .w-fl{width:26px;text-align:center}.w-de{width:26px;text-align:center}
 

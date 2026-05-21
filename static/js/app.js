@@ -181,6 +181,11 @@ function toast(msg, type='ok') {
   const d=document.createElement('div'); d.className=`ft ${type}`; d.textContent=msg;
   document.getElementById('ta').appendChild(d); setTimeout(()=>d.remove(),3200);
 }
+async function readJsonResponse(response){
+  const data = await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
 const MONS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 // ═══════════ CATEGORIES & PAYEES ═══════════
@@ -197,6 +202,14 @@ function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 function getAccountName(id){
   if(id==null || id==='') return '';
   return accountsById[String(id)]?.name || accountsById[id]?.name || `Account ${id}`;
+}
+
+function showAccountColumns(){
+  return accounts.length > 1 && selectedAccountId === 'all';
+}
+
+function syncAccountColumns(){
+  document.body.classList.toggle('show-account-cols', showAccountColumns());
 }
 
 function isSelectedAccount(txn){
@@ -224,6 +237,7 @@ function refreshAccountSelector(){
   sel.value = selectedAccountId;
   const badge = document.getElementById('account-selector-badge');
   if(badge) badge.textContent = selectedAccountId === 'all' ? 'All Accounts' : getAccountName(selectedAccountId);
+  syncAccountColumns();
 }
 
 function setSelectedAccount(accountId){
@@ -239,9 +253,77 @@ function setSelectedAccount(accountId){
   renderAllChart();
 }
 
+function renderAccountsView(){
+  const body = document.getElementById('accounts-body');
+  const count = document.getElementById('accounts-count');
+  if(count) count.textContent = `${accounts.length} total`;
+  if(!body) return;
+  body.innerHTML = '';
+  accounts.forEach(acc=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${acc.id}</td>
+      <td>${acc.name || ''}</td>
+      <td>${acc.type || 'checking'}</td>
+      <td>${acc.created_at || ''}</td>
+      <td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+        <button type="button" class="btn-ol btn-sm" onclick="editAccount(${acc.id})">Edit</button>
+        ${String(acc.id) !== '1' ? `<button type="button" class="btn-ol btn-sm" onclick="deleteAccount(${acc.id})">Delete</button>` : ''}
+      </td>`;
+    body.appendChild(tr);
+  });
+}
+
+function resetAccountForm(){
+  const idEl = document.getElementById('account-form-id');
+  const nameEl = document.getElementById('account-form-name');
+  const typeEl = document.getElementById('account-form-type');
+  if(idEl) idEl.value = '';
+  if(nameEl) nameEl.value = '';
+  if(typeEl) typeEl.value = 'checking';
+}
+
+function editAccount(id){
+  const acc = accounts.find(a=>String(a.id)===String(id));
+  if(!acc) return;
+  document.getElementById('account-form-id').value = acc.id;
+  document.getElementById('account-form-name').value = acc.name || '';
+  document.getElementById('account-form-type').value = acc.type || 'checking';
+  showView('accounts');
+}
+
+async function saveAccountForm(){
+  const id = document.getElementById('account-form-id').value.trim();
+  const name = document.getElementById('account-form-name').value.trim();
+  const type = document.getElementById('account-form-type').value;
+  const payload = {name, type};
+  const url = id ? `/api/accounts/${id}` : '/api/accounts';
+  const method = id ? 'PUT' : 'POST';
+  const response = await readJsonResponse(await resilientApiFetch(url, {
+    method,
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  }));
+  await loadAccounts();
+  renderAccountsView();
+  resetAccountForm();
+  toast(id ? 'Account updated' : 'Account created');
+}
+
+async function deleteAccount(id){
+  const acc = accounts.find(a=>String(a.id)===String(id));
+  if(!acc) return;
+  if(!confirm(`Delete account "${acc.name}"?`)) return;
+  await readJsonResponse(await resilientApiFetch(`/api/accounts/${id}`, {method:'DELETE'}));
+  await loadAccounts();
+  renderAccountsView();
+  if(String(selectedAccountId) === String(id)) setSelectedAccount('all');
+  toast('Account deleted');
+}
+
 function getTxnDisplayPayee(txn){
   if(!txn) return '';
-  return txn.transfer_account_name || txn.display_payee || getAccountName(txn.transfer_account_id) || txn.payee || '';
+  return getAccountName(txn.transfer_account_id) || txn.transfer_account_name || txn.display_payee || txn.payee || '';
 }
 
 function isTransferSource(txn){
@@ -436,13 +518,16 @@ function showView(v){
   document.getElementById('view-template').classList.toggle('active', v==='template');
   document.getElementById('view-all').classList.toggle('active', v==='all');
   document.getElementById('view-payees')?.classList.toggle('active', v==='payees');
+  document.getElementById('view-accounts')?.classList.toggle('active', v==='accounts');
   document.getElementById('tab-monthly').classList.toggle('active', v==='monthly');
   document.getElementById('tab-template').classList.toggle('active', v==='template');
   document.getElementById('tab-all').classList.toggle('active', v==='all');
   document.getElementById('tab-payees')?.classList.toggle('active', v==='payees');
+  document.getElementById('tab-accounts')?.classList.toggle('active', v==='accounts');
   if(v==='template') loadTemplates();
   if(v==='all') loadAllTransactions();
   if(v==='payees') loadPayeesView();
+  if(v==='accounts') renderAccountsView();
 }
 
 // ═══════════ CAROUSEL ═══════════
@@ -1477,6 +1562,7 @@ function updateSums(){
     .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
 }
 function renderTransactions(){
+  syncAccountColumns();
   const visible=getVisibleTransactions(collapseTransferRows(transactions));
   renderSection('income-body',  visible.filter(t=>t.entry_type==='credit'));
   renderSection('expense-body', visible.filter(t=>t.entry_type==='debit'));
@@ -1490,6 +1576,7 @@ function renderSection(bodyId, rows){
     const tr=document.createElement('tr'); tr.className='txn-row'; tr.dataset.id=txn.id;
     tr.appendChild(makeEC(txn,'date',   'date',   'w-dt'));
     tr.appendChild(makeEC(txn,'payee',  'text',   'w-py', sorted));
+    if(showAccountColumns()) tr.appendChild(makeAccountCell(txn, 'w-ac'));
     tr.appendChild(makeEC(txn,'category','text',  'w-ca'));
     tr.appendChild(makeEC(txn,'amount', 'number', 'w-am'));
     tr.appendChild(makeEC(txn,'notes',  'text',   'w-no'));
@@ -2102,6 +2189,15 @@ function makeAllEC(txn,field,type,extraClass,section){
   return td;
 }
 
+function makeAccountCell(txn, extraClass){
+  const td=document.createElement('td');
+  td.className='account-col editable '+(extraClass||'');
+  const span=document.createElement('span');
+  span.textContent=getAccountName(txn.account_id);
+  td.appendChild(span);
+  return td;
+}
+
 function makeAllFlagCell(txn){
   const td=document.createElement('td');td.className='w-fl';
   const btn=document.createElement('button');
@@ -2162,6 +2258,7 @@ function renderAllBody(rows){
     tr.appendChild(makeAllEC(txn,'date','date','w-dt-full'));
     tr.appendChild(makeAllEC(txn,'entry_type','text','w-etype'));
     tr.appendChild(makeAllEC(txn,'payee','text','w-py',sorted));
+    if(showAccountColumns()) tr.appendChild(makeAccountCell(txn, 'w-ac'));
     tr.appendChild(makeAllEC(txn,'category','text','w-ca'));
     tr.appendChild(makeAllEC(txn,'amount','number','w-am'));
     tr.appendChild(makeAllEC(txn,'notes','text','w-no'));
@@ -2178,6 +2275,7 @@ function renderAllBody(rows){
 }
 
 function renderAllTransactions(){
+  syncAccountColumns();
   const visible=getVisibleTransactions(collapseTransferRows(allTransactions));
   const filtered=applyAllFilters(visible);
   renderAllBody(filtered);
@@ -2429,6 +2527,7 @@ async function loadAccounts(){
   const saved = localStorage.getItem('ft-selected-account') || 'all';
   selectedAccountId = saved !== 'all' && !accounts.some(a=>String(a.id)===String(saved)) ? 'all' : saved;
   refreshAccountSelector();
+  renderAccountsView();
 }
 
 // ═══════════ GHOST ROW COMMIT ═══════════
@@ -2443,8 +2542,8 @@ async function commitGhostTmpl(entryType){
   const notes    = document.getElementById(`${p}-notes`).value.trim();
   const body = {payee,category,entry_type:entryType,amount,day_of_month:day,is_automatic:isAuto,notes};
   try{
-    const created = await resilientApiFetch('/api/templates',
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    const created = await readJsonResponse(await resilientApiFetch('/api/templates',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
     templates.push(created);
     if(payee) addPayee(payee);
     if(category){ addCat(category); if(payee) payeeDefaults[payee]=category; }
@@ -2475,8 +2574,8 @@ async function commitGhostMonthly(entryType){
                 status:'estimated',is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
                 account_id:selectedAccountId==='all'?undefined:selectedAccountId};
   try{
-    const created = await resilientApiFetch(`/api/months/${currentMonth}/transactions`,
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    const created = await readJsonResponse(await resilientApiFetch(`/api/months/${currentMonth}/transactions`,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
     transactions.push(created);
     if(payee) addPayee(payee);
     if(category){ addCat(category); if(payee) payeeDefaults[payee]=category; }
@@ -2504,8 +2603,8 @@ async function commitGhostAll(){
               is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
               account_id:selectedAccountId==='all'?undefined:selectedAccountId};
   try{
-    const created=await resilientApiFetch('/api/transactions',
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    const created=await readJsonResponse(await resilientApiFetch('/api/transactions',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
     allTransactions.push(created);
     if(payee) addPayee(payee);
     if(category){ addCat(category); if(payee) payeeDefaults[payee]=category; }
