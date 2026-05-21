@@ -1,6 +1,6 @@
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -59,9 +59,41 @@ def migrate_2_add_month_balance_columns(connection: sqlite3.Connection) -> None:
             )
 
 
+def migrate_3_add_accounts_and_transfers(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            type TEXT NOT NULL DEFAULT 'checking',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+    if not connection.execute("SELECT 1 FROM accounts LIMIT 1").fetchone():
+        connection.execute("INSERT INTO accounts(id,name,type) VALUES(1,'Checking','checking')")
+
+    if not _column_exists(connection, "transactions", "account_id"):
+        connection.execute(
+            "ALTER TABLE transactions ADD COLUMN account_id INTEGER NOT NULL DEFAULT 1"
+        )
+    if not _column_exists(connection, "transactions", "transfer_group_id"):
+        connection.execute("ALTER TABLE transactions ADD COLUMN transfer_group_id TEXT")
+    if not _column_exists(connection, "transactions", "transfer_role"):
+        connection.execute(
+            "ALTER TABLE transactions ADD COLUMN transfer_role TEXT NOT NULL DEFAULT 'normal'"
+        )
+    if not _column_exists(connection, "transactions", "transfer_account_id"):
+        connection.execute("ALTER TABLE transactions ADD COLUMN transfer_account_id INTEGER")
+
+    connection.execute("UPDATE transactions SET account_id=1 WHERE account_id IS NULL")
+
+
 MIGRATIONS = (
     (1, migrate_1_create_core_schema),
     (2, migrate_2_add_month_balance_columns),
+    (3, migrate_3_add_accounts_and_transfers),
 )
 
 

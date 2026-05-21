@@ -15,7 +15,7 @@ CLI flags:
                              env var, or generates a random one and prints it)
 """
 
-import os, sys, sqlite3, calendar, shutil
+import os, sys, sqlite3, calendar, shutil, uuid
 from collections import defaultdict
 from datetime import date
 from flask import (Flask, request, jsonify, render_template,
@@ -70,6 +70,77 @@ def get_user_db():
 
 def D(row):
     return dict(row) if row else None
+
+
+TXN_SELECT = (
+    "SELECT t.id,t.month,t.date,t.payee,t.category,t.amount,t.entry_type,t.status,"
+    "t.recurs_monthly,t.is_automatic,t.is_adhoc,t.notes,t.sort_order,t.account_id,"
+    "a.name AS account_name,t.transfer_group_id,t.transfer_role,t.transfer_account_id,"
+    "ta.name AS transfer_account_name "
+    "FROM transactions t "
+    "LEFT JOIN accounts a ON a.id=t.account_id "
+    "LEFT JOIN accounts ta ON ta.id=t.transfer_account_id"
+)
+
+
+def default_account_id(c):
+    row = c.execute("SELECT id FROM accounts ORDER BY id LIMIT 1").fetchone()
+    return int(row["id"] if row else 1)
+
+
+def opposite_entry_type(entry_type):
+    return "credit" if entry_type == "debit" else "debit"
+
+
+def fetch_txn(c, tid):
+    return c.execute(f"{TXN_SELECT} WHERE t.id=?", (tid,)).fetchone()
+
+
+def insert_txn_row(c, *, month, date, payee, category, amount, entry_type, status,
+                   recurs_monthly, is_automatic, is_adhoc, notes, sort_order,
+                   account_id, transfer_group_id=None, transfer_role="normal",
+                   transfer_account_id=None):
+    cur = c.execute(
+        "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
+        "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id,"
+        "transfer_group_id,transfer_role,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (month, date, payee, category, float(amount), entry_type, status,
+         int(recurs_monthly), int(is_automatic), int(is_adhoc), notes, int(sort_order),
+         int(account_id), transfer_group_id, transfer_role, transfer_account_id)
+    )
+    return cur.lastrowid
+
+
+def update_transfer_pair(c, txn, fields):
+    if not txn or not txn["transfer_group_id"]:
+        return
+    peer = c.execute(
+        "SELECT * FROM transactions WHERE transfer_group_id=? AND id<>? LIMIT 1",
+        (txn["transfer_group_id"], txn["id"])
+    ).fetchone()
+    if not peer:
+        return
+    peer_fields, peer_vals = [], []
+    for key, value in fields.items():
+        if key == "entry_type":
+            peer_fields.append("entry_type=?")
+            peer_vals.append(opposite_entry_type(value))
+        elif key == "amount":
+            peer_fields.append("amount=?")
+            peer_vals.append(float(value))
+        elif key == "transfer_account_id":
+            peer_fields.append("transfer_account_id=?")
+            peer_vals.append(value)
+        elif key in ("date", "category", "status", "notes", "recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
+            peer_fields.append(f"{key}=?")
+            peer_vals.append(value)
+    if peer_fields:
+        peer_vals.append(peer["id"])
+        c.execute(f"UPDATE transactions SET {','.join(peer_fields)} WHERE id=?", peer_vals)
+
+
+def is_transfer_txn(txn):
+    return bool(txn and txn["transfer_group_id"])
 
 
 def signed(entry_type, amount):
@@ -405,9 +476,7 @@ def app_meta():
 def list_txns(month):
     c    = get_user_db()
     rows = c.execute(
-        "SELECT id,month,date,payee,category,amount,entry_type,status,"
-        "recurs_monthly,is_automatic,is_adhoc,notes,sort_order "
-        "FROM transactions WHERE month=? ORDER BY is_adhoc,entry_type DESC,sort_order,id",
+        f"{TXN_SELECT} WHERE t.month=? ORDER BY t.is_adhoc,t.entry_type DESC,t.sort_order,t.id",
         (month,)
     ).fetchall()
     c.close()
@@ -420,16 +489,40 @@ def add_txn(month):
     d = request.get_json()
     c = get_user_db()
     c.execute("INSERT OR IGNORE INTO months(month) VALUES(?)", (month,))
-    cur = c.execute(
-        "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
-        "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (month, d.get("date"), d.get("payee", ""), d.get("category", ""),
-         float(d.get("amount", 0)), d.get("entry_type", "debit"), d.get("status", "estimated"),
-         int(d.get("recurs_monthly", 0)), int(d.get("is_automatic", 0)),
-         int(d.get("is_adhoc", 0)), d.get("notes"), int(d.get("sort_order", 0))))
-    new_id = cur.lastrowid
+    account_id = int(d.get("account_id") or default_account_id(c))
+    transfer_account_id = d.get("transfer_account_id")
+    transfer_group_id = d.get("transfer_group_id") or (uuid.uuid4().hex if transfer_account_id else None)
+    entry_type = d.get("entry_type", "debit")
+    if transfer_account_id:
+        source_id = insert_txn_row(
+            c, month=month, date=d.get("date"), payee=d.get("payee", ""),
+            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
+            is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
+            notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=account_id,
+            transfer_group_id=transfer_group_id, transfer_role="source",
+            transfer_account_id=int(transfer_account_id),
+        )
+        insert_txn_row(
+            c, month=month, date=d.get("date"), payee=d.get("payee", ""),
+            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=opposite_entry_type(entry_type),
+            status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
+            is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
+            notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=int(transfer_account_id),
+            transfer_group_id=transfer_group_id, transfer_role="destination",
+            transfer_account_id=account_id,
+        )
+        new_id = source_id
+    else:
+        new_id = insert_txn_row(
+            c, month=month, date=d.get("date"), payee=d.get("payee", ""),
+            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
+            is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
+            notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=account_id,
+        )
     c.commit()
-    return jsonify(D(c.execute("SELECT * FROM transactions WHERE id=?", (new_id,)).fetchone())), 201
+    return jsonify(D(fetch_txn(c, new_id))), 201
 
 
 @app.route("/api/transactions/<int:tid>", methods=["PUT"])
@@ -452,9 +545,22 @@ def update_txn(tid):
         return jsonify({"error": "no fields"}), 400
     vals.append(tid)
     c = get_user_db()
+    txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
+    if not txn:
+        c.close()
+        return jsonify({"error": "not found"}), 404
+    if txn["transfer_group_id"] and "payee" in d:
+        c.close()
+        return jsonify({"error": "transfer payee is derived from the destination account"}), 400
     c.execute(f"UPDATE transactions SET {','.join(fields)} WHERE id=?", vals)
+    if txn["transfer_group_id"]:
+        transfer_fields = {}
+        for f in ["date", "category", "amount", "entry_type", "status", "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order", "transfer_account_id"]:
+            if f in d:
+                transfer_fields[f] = d[f]
+        update_transfer_pair(c, txn, transfer_fields)
     c.commit()
-    return jsonify(D(c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()))
+    return jsonify(D(fetch_txn(c, tid)))
 
 
 @app.route("/api/transactions/all")
@@ -463,9 +569,7 @@ def list_all_txns():
     """Return every transaction across all months, ordered by date."""
     c = get_user_db()
     rows = c.execute(
-        "SELECT id,month,date,payee,category,amount,entry_type,status,"
-        "recurs_monthly,is_automatic,is_adhoc,notes,sort_order "
-        "FROM transactions ORDER BY date,id"
+        f"{TXN_SELECT} ORDER BY t.date,t.id"
     ).fetchall()
     c.close()
     return jsonify([D(r) for r in rows])
@@ -482,23 +586,52 @@ def add_txn_any():
         return jsonify({"error": "date (YYYY-MM-DD) is required"}), 400
     c = get_user_db()
     c.execute("INSERT OR IGNORE INTO months(month) VALUES(?)", (month,))
-    cur = c.execute(
-        "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
-        "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (month, date, d.get("payee", ""), d.get("category", ""),
-         float(d.get("amount", 0)), d.get("entry_type", "debit"), d.get("status", "estimated"),
-         int(d.get("recurs_monthly", 0)), int(d.get("is_automatic", 0)),
-         int(d.get("is_adhoc", 0)), d.get("notes"), int(d.get("sort_order", 0))))
-    new_id = cur.lastrowid
+    account_id = int(d.get("account_id") or default_account_id(c))
+    transfer_account_id = d.get("transfer_account_id")
+    transfer_group_id = d.get("transfer_group_id") or (uuid.uuid4().hex if transfer_account_id else None)
+    entry_type = d.get("entry_type", "debit")
+    if transfer_account_id:
+        source_id = insert_txn_row(
+            c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
+            amount=d.get("amount", 0), entry_type=entry_type, status=d.get("status", "estimated"),
+            recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
+            is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
+            account_id=account_id, transfer_group_id=transfer_group_id, transfer_role="source",
+            transfer_account_id=int(transfer_account_id),
+        )
+        insert_txn_row(
+            c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
+            amount=d.get("amount", 0), entry_type=opposite_entry_type(entry_type), status=d.get("status", "estimated"),
+            recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
+            is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
+            account_id=int(transfer_account_id), transfer_group_id=transfer_group_id,
+            transfer_role="destination", transfer_account_id=account_id,
+        )
+        new_id = source_id
+    else:
+        new_id = insert_txn_row(
+            c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
+            amount=d.get("amount", 0), entry_type=entry_type, status=d.get("status", "estimated"),
+            recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
+            is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
+            account_id=account_id,
+        )
     c.commit()
-    return jsonify(D(c.execute("SELECT * FROM transactions WHERE id=?", (new_id,)).fetchone())), 201
+    return jsonify(D(fetch_txn(c, new_id))), 201
 
 
 @app.route("/api/transactions/<int:tid>", methods=["DELETE"])
 @require_auth
 def del_txn(tid):
     c = get_user_db()
-    c.execute("DELETE FROM transactions WHERE id=?", (tid,))
+    txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
+    if not txn:
+        c.close()
+        return jsonify({"deleted": tid})
+    if txn["transfer_group_id"]:
+        c.execute("DELETE FROM transactions WHERE transfer_group_id=?", (txn["transfer_group_id"],))
+    else:
+        c.execute("DELETE FROM transactions WHERE id=?", (tid,))
     c.commit()
     c.close()
     return jsonify({"deleted": tid})
@@ -512,6 +645,9 @@ def push_to_template(tid):
     if not txn:
         c.close()
         return jsonify({"error": "not found"}), 404
+    if txn["transfer_group_id"]:
+        c.close()
+        return jsonify({"error": "transfer rows are not template sources"}), 400
     peers = c.execute(
         "SELECT id FROM transactions WHERE month=? AND payee=? AND entry_type=? "
         "AND is_adhoc=0 ORDER BY COALESCE(date,'9999'), id",
@@ -565,10 +701,10 @@ def init_month(month):
         for i, tmpl in enumerate(tmpls):
             c.execute(
                 "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
-                "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order)"
-                " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?)",
+                "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
+                " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
                 (month, txn_date(tmpl), tmpl["payee"], tmpl["category"], float(tmpl["amount"]),
-                 tmpl["entry_type"], int(tmpl["is_automatic"]), tmpl["notes"], i))
+                 tmpl["entry_type"], int(tmpl["is_automatic"]), tmpl["notes"], i, default_account_id(c)))
     else:
         groups = defaultdict(list)
         for t in tmpls:
@@ -591,10 +727,10 @@ def init_month(month):
                 else:
                     c.execute(
                         "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
-                        "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order)"
-                        " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?)",
+                        "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
+                        " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
                         (month, td, payee, tmpl["category"], float(tmpl["amount"]), etype,
-                         int(tmpl["is_automatic"]), tmpl["notes"], i))
+                         int(tmpl["is_automatic"]), tmpl["notes"], i, default_account_id(c)))
     c.commit()
     n = c.execute("SELECT COUNT(*) n FROM transactions WHERE month=?", (month,)).fetchone()["n"]
     c.close()
@@ -732,6 +868,15 @@ def del_template(tid):
     c.commit()
     c.close()
     return jsonify({"deleted": tid})
+
+
+@app.route("/api/accounts")
+@require_auth
+def list_accounts():
+    c = get_user_db()
+    rows = c.execute("SELECT id,name,type,created_at FROM accounts ORDER BY id").fetchall()
+    c.close()
+    return jsonify([D(r) for r in rows])
 
 
 # ──────────────────────────── Autocomplete API ───────────────────────────────

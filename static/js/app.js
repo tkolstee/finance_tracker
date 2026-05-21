@@ -6,6 +6,8 @@ let payeeBadges   = {}, tmplBadges = {};
 let balChart      = null;
 let chartVisible  = true;
 let payeeDefaults = {};
+let accounts      = [];
+let accountsById  = {};
 // Payees view state
 const PAYEE_COLORS = [
   '#4f7ef8','#22c55e','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#fb7185','#f97316',
@@ -191,6 +193,42 @@ function updateDL() {
 function addCat(c){ if(c&&!categories.has(c)){categories.add(c);updateDL();} }
 function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 
+function getAccountName(id){
+  if(id==null || id==='') return '';
+  return accountsById[String(id)]?.name || accountsById[id]?.name || `Account ${id}`;
+}
+
+function getTxnDisplayPayee(txn){
+  if(!txn) return '';
+  return txn.transfer_account_name || txn.display_payee || getAccountName(txn.transfer_account_id) || txn.payee || '';
+}
+
+function isTransferSource(txn){
+  return !!txn && !!txn.transfer_group_id && txn.transfer_role === 'source';
+}
+
+function collapseTransferRows(rows){
+  if(!Array.isArray(rows) || rows.length===0) return [];
+  const sourceByGroup = new Map();
+  for(const row of rows){
+    if(isTransferSource(row)) sourceByGroup.set(row.transfer_group_id, row);
+  }
+  const seen = new Set();
+  const result = [];
+  for(const row of rows){
+    if(!row.transfer_group_id){
+      result.push(row);
+      continue;
+    }
+    const source = sourceByGroup.get(row.transfer_group_id) || row;
+    if(row.id !== source.id) continue;
+    if(seen.has(row.transfer_group_id)) continue;
+    seen.add(row.transfer_group_id);
+    result.push({...source, display_payee:getTxnDisplayPayee(source), is_transfer_display:true});
+  }
+  return result;
+}
+
 // ═══════════ CUSTOM AUTOCOMPLETE ═══════════
 let _acDrop=null, _acOnPick=null, _acActiveIdx=-1;
 let _acInput=null, _acScrollCleanup=null;
@@ -309,7 +347,7 @@ function sortRows(rows, bodyId, defaultCol){
     const cmp=av<bv?-1:av>bv?1:0;
     if(cmp!==0) return cmp*ss.dir;
     // secondary: payee alphabetical
-    return (a.payee||'').localeCompare(b.payee||'');
+    return getTxnDisplayPayee(a).localeCompare(getTxnDisplayPayee(b));
   });
 }
 
@@ -969,10 +1007,10 @@ function renderAllChart(){
 // ═══════════ PAYEE BADGES ═══════════
 function computePayeeBadges(){
   payeeBadges={};
-  const sorted=[...transactions].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
+  const sorted=[...collapseTransferRows(transactions)].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
   const seen={};
   for(const t of sorted){
-    const k=`${t.payee}|${t.entry_type}`; seen[k]=(seen[k]||0)+1; payeeBadges[t.id]=seen[k];
+    const k=`${getTxnDisplayPayee(t)}|${t.entry_type}`; seen[k]=(seen[k]||0)+1; payeeBadges[t.id]=seen[k];
   }
 }
 function computeTmplBadges(){
@@ -986,6 +1024,7 @@ function computeTmplBadges(){
 
 // ═══════════ PUSH-TO-TEMPLATE STATUS ═══════════
 function pushStatus(txn){
+  if(txn.transfer_group_id) return 'transfer';
   const myOrder=payeeBadges[txn.id]||1;
   const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type)
     .sort((a,b)=>a.sort_order-b.sort_order||a.id-b.id);
@@ -1064,8 +1103,17 @@ function applyTmplTarget(t){
 // ═══════════ EDITABLE CELL — TXN ═══════════
 function makePayeeSpan(txn, section){
   const span=document.createElement('span');
-  span.textContent=txn.payee||'';
-  const total=section.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type).length;
+  const label=getTxnDisplayPayee(txn);
+  if(txn.transfer_group_id){
+    span.className='transfer-payee';
+    const pill=document.createElement('span');
+    pill.className='account-pill';
+    pill.innerHTML=`<i class="bi bi-arrow-left-right me-1"></i>${label}`;
+    span.appendChild(pill);
+    return span;
+  }
+  span.textContent=label;
+  const total=section.filter(t=>getTxnDisplayPayee(t)===label&&t.entry_type===txn.entry_type).length;
   if(total>1){
     const b=document.createElement('span'); b.className='pbadge'; b.textContent='#'+(payeeBadges[txn.id]||1);
     span.appendChild(b);
@@ -1075,8 +1123,17 @@ function makePayeeSpan(txn, section){
 
 function makePayeeAllSpan(txn,section){
   const span=document.createElement('span');
-  span.textContent=txn.payee||'';
-  const total=section.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type).length;
+  const label=getTxnDisplayPayee(txn);
+  if(txn.transfer_group_id){
+    span.className='transfer-payee';
+    const pill=document.createElement('span');
+    pill.className='account-pill';
+    pill.innerHTML=`<i class="bi bi-arrow-left-right me-1"></i>${label}`;
+    span.appendChild(pill);
+    return span;
+  }
+  span.textContent=label;
+  const total=section.filter(t=>getTxnDisplayPayee(t)===label&&t.entry_type===txn.entry_type).length;
   if(total>1){
     const b=document.createElement('span'); b.className='pbadge'; b.textContent='#'+(allPayeeBadges[txn.id]||1);
     span.appendChild(b);
@@ -1104,6 +1161,7 @@ function makeEC(txn, field, type, extraClass, section){
 
   td.onclick=e=>{
     if(td.querySelector('input,select')) return;
+    if(txn.transfer_group_id && field==='payee') return;
     editingTxnId=txn.id;
     span.style.display='none';
     let el;
@@ -1336,6 +1394,10 @@ function makeFlagCell(txn,field,icon){
 }
 function makePushCell(txn){
   const td=document.createElement('td'); td.className='w-fl';
+  if(txn.transfer_group_id){
+    td.innerHTML='<span class="transfer-icon" title="Linked transfer"><i class="bi bi-arrow-left-right"></i></span>';
+    return td;
+  }
   const st=pushStatus(txn);
   const btn=document.createElement('button'); btn.className=`push-btn ${st}`;
   const icons={pnew:'bi-arrow-right-circle',pdiff:'bi-arrow-right-circle-fill',pexact:'bi-check-circle-fill'};
@@ -1357,8 +1419,9 @@ function makeStatusCell(txn){
 
 // ═══════════ RENDER TRANSACTIONS ═══════════
 function updateSums(){
-  const inc=transactions.filter(t=>t.entry_type==='credit');
-  const exp=transactions.filter(t=>t.entry_type==='debit');
+  const visible=collapseTransferRows(transactions).filter(t=>!t.transfer_group_id);
+  const inc=visible.filter(t=>t.entry_type==='credit');
+  const exp=visible.filter(t=>t.entry_type==='debit');
   const s=arr=>arr.reduce((acc,t)=>acc+(t.entry_type==='credit'?t.amount:-t.amount),0);
   const incTotal=s(inc), expTotal=s(exp);
   document.getElementById('income-sum').textContent=fmt(incTotal);
@@ -1372,8 +1435,9 @@ function updateSums(){
     .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
 }
 function renderTransactions(){
-  renderSection('income-body',  transactions.filter(t=>t.entry_type==='credit'));
-  renderSection('expense-body', transactions.filter(t=>t.entry_type==='debit'));
+  const visible=collapseTransferRows(transactions);
+  renderSection('income-body',  visible.filter(t=>t.entry_type==='credit'));
+  renderSection('expense-body', visible.filter(t=>t.entry_type==='debit'));
   updateSums();
 }
 function renderSection(bodyId, rows){
@@ -1403,8 +1467,9 @@ async function updateField(id, field, value){
   const txn=getTxnById(id);
   if(!txn || valuesEqual(field, txn[field], value)) return;
 
-  applyLocalTxnField(id, field, value);
   const patch = {[field]: value};
+  if(txn.transfer_group_id && field==='payee') return;
+  applyLocalTxnField(id, field, value);
   if(field==='payee'){
     const txnNow=getTxnById(id);
     if(txnNow && !txnNow.category){
@@ -1418,8 +1483,12 @@ async function updateField(id, field, value){
 
   const data=await fetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  const i=transactions.findIndex(t=>t.id===id);
-  if(i!==-1) transactions[i]={...transactions[i],...data};
+  if(txn.transfer_group_id){
+    transactions=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
+  }else{
+    const i=transactions.findIndex(t=>t.id===id);
+    if(i!==-1) transactions[i]={...transactions[i],...data};
+  }
   computePayeeBadges();
   if(!hasActiveEditor()) renderTransactions();
   else updateSums();
@@ -1428,10 +1497,15 @@ async function updateField(id, field, value){
 }
 
 async function delTxn(id){
+  const txn=getTxnById(id);
   await fetch(`/api/transactions/${id}`,{method:'DELETE'});
-  transactions=transactions.filter(t=>t.id!==id);
+  if(txn&&txn.transfer_group_id){
+    transactions=transactions.filter(t=>t.transfer_group_id!==txn.transfer_group_id);
+  }else{
+    transactions=transactions.filter(t=>t.id!==id);
+  }
   computePayeeBadges(); renderTransactions(); refreshBalances();
-  monthCounts[currentMonth]=Math.max(0,(monthCounts[currentMonth]||1)-1);
+  monthCounts[currentMonth]=Math.max(0,(monthCounts[currentMonth]||1)-(txn&&txn.transfer_group_id?2:1));
   buildCarousel();
   refreshSuggestions();
 }
@@ -1526,7 +1600,10 @@ async function loadPayeesView(){
     }
   }
   // build payee ordering if empty from the loaded transactions
-  const names = [...new Set((allTransactions||[]).map(t=>t.payee).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const names = [...new Set(collapseTransferRows(allTransactions).map(t=>getTxnDisplayPayee(t)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  if(names.length){
+    payeesState.order = [...new Set([...(payeesState.order||[]), ...names])];
+  }
   if(payeesState.order.length===0) payeesState.order = names;
   if(payeesState.order.length===0){
     payeesState.order = [...new Set((payees||[]).values())].sort((a,b)=>a.localeCompare(b));
@@ -1561,8 +1638,8 @@ function getPayeesRangeMeta(from, to){
 }
 
 function getPayeeStats(payee, labels, dateSet){
-  const total = (allTransactions||[]).reduce((sum, t)=>{
-    if(t.payee !== payee || !t.date || !dateSet.has(t.date)) return sum;
+  const total = collapseTransferRows(allTransactions).reduce((sum, t)=>{
+    if(getTxnDisplayPayee(t) !== payee || !t.date || !dateSet.has(t.date)) return sum;
     return sum + Math.abs(parseFloat(t.amount||0));
   }, 0);
   return total;
@@ -1571,7 +1648,7 @@ function getPayeeStats(payee, labels, dateSet){
 function buildPayeesList(){
   const wrap=document.getElementById('payees-list'); if(!wrap) return; wrap.innerHTML='';
   const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
-  const rangeRows = (allTransactions||[]).filter(t=>t.date && (!fromDate || t.date>=fromDate) && (!toDate || t.date<=toDate));
+  const rangeRows = collapseTransferRows(allTransactions).filter(t=>t.date && (!fromDate || t.date>=fromDate) && (!toDate || t.date<=toDate));
   const dateSet = new Set(rangeRows.map(t=>t.date));
   const {monthCount} = getPayeesRangeMeta(fromValue, toValue);
   payeesState.order.forEach(p=>{
@@ -1592,7 +1669,8 @@ function renderPayeesView(){
   const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
   // determine date bounds
   let minDate = fromDate, maxDate = toDate;
-  const rows = (allTransactions||[]).filter(t=>t.date && (!minDate || t.date>=minDate) && (!maxDate || t.date<=maxDate));
+  const visibleTxns = collapseTransferRows(allTransactions);
+  const rows = visibleTxns.filter(t=>t.date && (!minDate || t.date>=minDate) && (!maxDate || t.date<=maxDate));
   if(!minDate && rows.length) minDate = rows.map(r=>r.date).sort()[0];
   if(!maxDate && rows.length) maxDate = rows.map(r=>r.date).sort().reverse()[0];
   if(!minDate || !maxDate){ if(payeesChart){ payeesChart.destroy(); payeesChart=null; } document.getElementById('payees-body').innerHTML=''; return; }
@@ -1608,7 +1686,7 @@ function renderPayeesView(){
   const datasets = selected.map((p, idx)=>{
     const data = labels.map(l=>0);
     const monthMap = new Map(labels.map((l,i)=>[l.slice(0,7), i]));
-    for(const t of allTransactions||[]){ if(t.payee===p && t.date){ const key = t.date.slice(0,7); const i = monthMap.get(key); if(i!==undefined && i>=0 && i<data.length) data[i] += Math.abs(parseFloat(t.amount||0)); } }
+    for(const t of visibleTxns){ if(getTxnDisplayPayee(t)===p && t.date){ const key = t.date.slice(0,7); const i = monthMap.get(key); if(i!==undefined && i>=0 && i<data.length) data[i] += Math.abs(parseFloat(t.amount||0)); } }
     return { label:p, data, backgroundColor: payeesState.colors[p]||PAYEE_COLORS[idx%PAYEE_COLORS.length], stack:'s1' };
   });
   const ctx = document.getElementById('payees-bar-chart').getContext('2d');
@@ -1645,9 +1723,9 @@ function renderPayeesView(){
   });
   // render txn list
   const tb=document.getElementById('payees-body'); tb.innerHTML='';
-  const visible = (allTransactions||[]).filter(t=>payeesState.selected.has(t.payee) && t.date && t.date>=labels[0] && t.date<=labels[labels.length-1])
+  const visible = visibleTxns.filter(t=>payeesState.selected.has(getTxnDisplayPayee(t)) && t.date && t.date>=labels[0] && t.date<=labels[labels.length-1])
                    .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||a.id-b.id);
-  for(const t of visible){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${t.date}</td><td>${t.entry_type==='credit'?'Income':'Expense'}</td><td>${t.payee}</td><td>${t.category||''}</td><td style="text-align:right">${fmt(t.amount)}</td><td>${t.notes||''}</td>`; tb.appendChild(tr); }
+  for(const t of visible){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${t.date}</td><td>${t.entry_type==='credit'?'Income':'Expense'}</td><td>${getTxnDisplayPayee(t)}</td><td>${t.category||''}</td><td style="text-align:right">${fmt(t.amount)}</td><td>${t.notes||''}</td>`; tb.appendChild(tr); }
   buildPayeesList();
 }
 
@@ -1858,17 +1936,18 @@ function computeAllPayeeBadges(){
   allPayeeBadges={};
   // Badge ordering is per-month, matching the monthly view's behaviour
   const byMonth={};
-  for(const t of allTransactions){(byMonth[t.month||'']||=[]).push(t);}
+  for(const t of collapseTransferRows(allTransactions)){(byMonth[t.month||'']||=[]).push(t);}
   for(const txns of Object.values(byMonth)){
     const sorted=[...txns].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
     const seen={};
     for(const t of sorted){
-      const k=`${t.payee}|${t.entry_type}`;seen[k]=(seen[k]||0)+1;allPayeeBadges[t.id]=seen[k];
+      const k=`${getTxnDisplayPayee(t)}|${t.entry_type}`;seen[k]=(seen[k]||0)+1;allPayeeBadges[t.id]=seen[k];
     }
   }
 }
 
 function pushStatusAll(txn){
+  if(txn.transfer_group_id) return 'transfer';
   const myOrder=allPayeeBadges[txn.id]||1;
   const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type)
     .sort((a,b)=>a.sort_order-b.sort_order||a.id-b.id);
@@ -1898,6 +1977,7 @@ function makeAllEC(txn,field,type,extraClass,section){
 
   td.onclick=e=>{
     if(td.querySelector('input,select')) return;
+    if(txn.transfer_group_id && field==='payee') return;
     editingAllTxnId=txn.id;
     span.style.display='none';
     let el;
@@ -1933,6 +2013,9 @@ function makeAllEC(txn,field,type,extraClass,section){
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
       acBind(el,()=>[...categories].sort(),v=>{el.value=v;},makeOnTab);
     }else if(field==='payee'){
+      if(txn.transfer_group_id){
+        return;
+      }
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
       acBind(el,()=>[...payees].sort(),v=>{el.value=v;},makeOnTab);
     }else if(field==='entry_type'){
@@ -1999,6 +2082,10 @@ function makeAllStatusCell(txn){
 
 function makeAllPushCell(txn){
   const td=document.createElement('td');td.className='w-fl';
+  if(txn.transfer_group_id){
+    td.innerHTML='<span class="transfer-icon" title="Linked transfer"><i class="bi bi-arrow-left-right"></i></span>';
+    return td;
+  }
   const st=pushStatusAll(txn);
   const btn=document.createElement('button');btn.className=`push-btn ${st}`;
   const icons={pnew:'bi-arrow-right-circle',pdiff:'bi-arrow-right-circle-fill',pexact:'bi-check-circle-fill'};
@@ -2049,10 +2136,11 @@ function renderAllBody(rows){
 }
 
 function renderAllTransactions(){
-  const filtered=applyAllFilters(allTransactions);
+  const visible=collapseTransferRows(allTransactions);
+  const filtered=applyAllFilters(visible);
   renderAllBody(filtered);
   updateAllFilterBadge();
-  updateResultCount(allTransactions.length,filtered.length);
+  updateResultCount(visible.length,filtered.length);
   renderAllChart();
 }
 
@@ -2060,8 +2148,9 @@ function renderAllTransactions(){
 async function updateAllField(id,field,value){
   const txn=getAllTxnById(id);
   if(!txn||valuesEqual(field,txn[field],value)) return;
-  applyLocalAllTxnField(id,field,value);
   const patch={[field]:value};
+  if(txn.transfer_group_id && field==='payee') return;
+  applyLocalAllTxnField(id,field,value);
   if(field==='payee'){
     const now=getAllTxnById(id);
     if(now&&!now.category){
@@ -2071,8 +2160,12 @@ async function updateAllField(id,field,value){
   }
   const data=await resilientApiFetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  const i=allTransactions.findIndex(t=>t.id===id);
-  if(i!==-1) allTransactions[i]={...allTransactions[i],...data};
+  if(txn.transfer_group_id){
+    allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
+  }else{
+    const i=allTransactions.findIndex(t=>t.id===id);
+    if(i!==-1) allTransactions[i]={...allTransactions[i],...data};
+  }
   computeAllPayeeBadges();
   if(!hasActiveEditor()) renderAllTransactions();
   refreshSuggestions();
@@ -2081,8 +2174,12 @@ async function updateAllField(id,field,value){
 async function delAllTxn(id){
   await resilientApiFetch(`/api/transactions/${id}`,{method:'DELETE'});
   const txn=getAllTxnById(id);
-  if(txn&&txn.month) monthCounts[txn.month]=Math.max(0,(monthCounts[txn.month]||1)-1);
-  allTransactions=allTransactions.filter(t=>t.id!==id);
+  if(txn&&txn.month) monthCounts[txn.month]=Math.max(0,(monthCounts[txn.month]||1)-(txn.transfer_group_id?2:1));
+  if(txn&&txn.transfer_group_id){
+    allTransactions=allTransactions.filter(t=>t.transfer_group_id!==txn.transfer_group_id);
+  }else{
+    allTransactions=allTransactions.filter(t=>t.id!==id);
+  }
   computeAllPayeeBadges();renderAllTransactions();
 }
 
@@ -2108,7 +2205,7 @@ function applyAllFilters(rows){
   const {search,dateFrom,dateTo,categories,statuses,entryType,amountMin,amountMax}=allFilterState;
   const q=search.trim().toLowerCase();
   return rows.filter(t=>{
-    if(q && ![(t.payee||''),(t.category||''),(t.notes||'')].some(s=>s.toLowerCase().includes(q))) return false;
+    if(q && ![getTxnDisplayPayee(t),(t.category||''),(t.notes||'')].some(s=>s.toLowerCase().includes(q))) return false;
     if(dateFrom && t.date && t.date<dateFrom) return false;
     if(dateTo   && t.date && t.date>dateTo)   return false;
     if(categories.size && !categories.has(t.category||'')) return false;
@@ -2144,11 +2241,11 @@ function updateResultCount(total,shown){
 }
 
 function exportAllCSV(){
-  const rows = applyAllFilters(allTransactions);
+  const rows = applyAllFilters(collapseTransferRows(allTransactions));
   const cols = [
     {key:'date',       label:'Date'},
     {key:'entry_type', label:'Type',     fmt:v=>v==='credit'?'Income':'Expense'},
-    {key:'payee',      label:'Payee'},
+    {key:'display_payee', label:'Payee', fmt:v=>v||''},
     {key:'category',   label:'Category'},
     {key:'amount',     label:'Amount',   fmt:v=>parseFloat(v||0).toFixed(2)},
     {key:'status',     label:'Status'},
@@ -2280,6 +2377,12 @@ async function loadAllTransactions(){
   allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
   allTransactions.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computeAllPayeeBadges();renderAllTransactions();
+}
+
+async function loadAccounts(){
+  accounts=await resilientApiFetch('/api/accounts').then(r=>r.json()).catch(()=>[]);
+  accountsById={};
+  accounts.forEach(a=>{ accountsById[String(a.id)] = a; });
 }
 
 // ═══════════ GHOST ROW COMMIT ═══════════
@@ -2452,6 +2555,7 @@ function initGhostRows(){
     fetch('/api/payees').then(r=>r.json()).catch(()=>[]),
     fetch('/api/payee-defaults').then(r=>r.json()).catch(()=>({})),
   ]);
+  await loadAccounts();
   cats.forEach(c=>c&&addCat(c));
   payeeList.forEach(p=>p&&addPayee(p));
   payeeDefaults=pd;
