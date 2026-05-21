@@ -8,6 +8,7 @@ let chartVisible  = true;
 let payeeDefaults = {};
 let accounts      = [];
 let accountsById  = {};
+let selectedAccountId = 'all';
 // Payees view state
 const PAYEE_COLORS = [
   '#4f7ef8','#22c55e','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#fb7185','#f97316',
@@ -196,6 +197,46 @@ function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 function getAccountName(id){
   if(id==null || id==='') return '';
   return accountsById[String(id)]?.name || accountsById[id]?.name || `Account ${id}`;
+}
+
+function isSelectedAccount(txn){
+  return selectedAccountId === 'all' || String(txn?.account_id ?? '') === String(selectedAccountId);
+}
+
+function getVisibleTransactions(rows){
+  return (rows || []).filter(isSelectedAccount);
+}
+
+function refreshAccountSelector(){
+  const sel = document.getElementById('account-selector');
+  if(!sel) return;
+  sel.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = 'all';
+  allOpt.textContent = 'All Accounts';
+  sel.appendChild(allOpt);
+  accounts.forEach(acc=>{
+    const opt = document.createElement('option');
+    opt.value = String(acc.id);
+    opt.textContent = acc.name || `Account ${acc.id}`;
+    sel.appendChild(opt);
+  });
+  sel.value = selectedAccountId;
+  const badge = document.getElementById('account-selector-badge');
+  if(badge) badge.textContent = selectedAccountId === 'all' ? 'All Accounts' : getAccountName(selectedAccountId);
+}
+
+function setSelectedAccount(accountId){
+  selectedAccountId = accountId == null ? 'all' : String(accountId);
+  localStorage.setItem('ft-selected-account', selectedAccountId);
+  refreshAccountSelector();
+  if(transactions.length) computePayeeBadges();
+  if(allTransactions.length) computeAllPayeeBadges();
+  renderTransactions();
+  renderAllTransactions();
+  loadGlobalBalance();
+  if(currentMonth) loadChart(currentMonth);
+  renderAllChart();
 }
 
 function getTxnDisplayPayee(txn){
@@ -878,9 +919,10 @@ function renderAllChart(){
   const canvas = document.getElementById('all-bal-chart');
   if(!canvas) return;
 
+  const accountRows = getVisibleTransactions(collapseTransferRows(allTransactions));
   const sourceRows = allChartScope === 'filtered'
-    ? applyAllFilters(allTransactions)
-    : allTransactions;
+    ? applyAllFilters(accountRows)
+    : accountRows;
 
   // Rows with valid dates
   const dated = sourceRows.filter(t => t.date && t.date.length >= 10);
@@ -1007,7 +1049,7 @@ function renderAllChart(){
 // ═══════════ PAYEE BADGES ═══════════
 function computePayeeBadges(){
   payeeBadges={};
-  const sorted=[...collapseTransferRows(transactions)].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
+  const sorted=[...getVisibleTransactions(collapseTransferRows(transactions))].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
   const seen={};
   for(const t of sorted){
     const k=`${getTxnDisplayPayee(t)}|${t.entry_type}`; seen[k]=(seen[k]||0)+1; payeeBadges[t.id]=seen[k];
@@ -1419,7 +1461,7 @@ function makeStatusCell(txn){
 
 // ═══════════ RENDER TRANSACTIONS ═══════════
 function updateSums(){
-  const visible=collapseTransferRows(transactions).filter(t=>!t.transfer_group_id);
+  const visible=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>!t.transfer_group_id);
   const inc=visible.filter(t=>t.entry_type==='credit');
   const exp=visible.filter(t=>t.entry_type==='debit');
   const s=arr=>arr.reduce((acc,t)=>acc+(t.entry_type==='credit'?t.amount:-t.amount),0);
@@ -1435,7 +1477,7 @@ function updateSums(){
     .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
 }
 function renderTransactions(){
-  const visible=collapseTransferRows(transactions);
+  const visible=getVisibleTransactions(collapseTransferRows(transactions));
   renderSection('income-body',  visible.filter(t=>t.entry_type==='credit'));
   renderSection('expense-body', visible.filter(t=>t.entry_type==='debit'));
   updateSums();
@@ -1936,7 +1978,7 @@ function computeAllPayeeBadges(){
   allPayeeBadges={};
   // Badge ordering is per-month, matching the monthly view's behaviour
   const byMonth={};
-  for(const t of collapseTransferRows(allTransactions)){(byMonth[t.month||'']||=[]).push(t);}
+  for(const t of getVisibleTransactions(collapseTransferRows(allTransactions))){(byMonth[t.month||'']||=[]).push(t);}
   for(const txns of Object.values(byMonth)){
     const sorted=[...txns].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
     const seen={};
@@ -2136,7 +2178,7 @@ function renderAllBody(rows){
 }
 
 function renderAllTransactions(){
-  const visible=collapseTransferRows(allTransactions);
+  const visible=getVisibleTransactions(collapseTransferRows(allTransactions));
   const filtered=applyAllFilters(visible);
   renderAllBody(filtered);
   updateAllFilterBadge();
@@ -2205,6 +2247,7 @@ function applyAllFilters(rows){
   const {search,dateFrom,dateTo,categories,statuses,entryType,amountMin,amountMax}=allFilterState;
   const q=search.trim().toLowerCase();
   return rows.filter(t=>{
+    if(selectedAccountId!=='all' && String(t.account_id ?? '') !== String(selectedAccountId)) return false;
     if(q && ![getTxnDisplayPayee(t),(t.category||''),(t.notes||'')].some(s=>s.toLowerCase().includes(q))) return false;
     if(dateFrom && t.date && t.date<dateFrom) return false;
     if(dateTo   && t.date && t.date>dateTo)   return false;
@@ -2220,7 +2263,7 @@ function applyAllFilters(rows){
 
 function countActiveFilters(){
   const f=allFilterState;
-  return (f.search?1:0)+(f.dateFrom?1:0)+(f.dateTo?1:0)+
+  return (selectedAccountId!=='all'?1:0)+(f.search?1:0)+(f.dateFrom?1:0)+(f.dateTo?1:0)+
          (f.categories.size?1:0)+(f.statuses.size?1:0)+
          (f.entryType!=='both'?1:0)+(f.amountMin!==''?1:0)+(f.amountMax!==''?1:0);
 }
@@ -2241,7 +2284,7 @@ function updateResultCount(total,shown){
 }
 
 function exportAllCSV(){
-  const rows = applyAllFilters(collapseTransferRows(allTransactions));
+  const rows = applyAllFilters(getVisibleTransactions(collapseTransferRows(allTransactions)));
   const cols = [
     {key:'date',       label:'Date'},
     {key:'entry_type', label:'Type',     fmt:v=>v==='credit'?'Income':'Expense'},
@@ -2383,6 +2426,9 @@ async function loadAccounts(){
   accounts=await resilientApiFetch('/api/accounts').then(r=>r.json()).catch(()=>[]);
   accountsById={};
   accounts.forEach(a=>{ accountsById[String(a.id)] = a; });
+  const saved = localStorage.getItem('ft-selected-account') || 'all';
+  selectedAccountId = saved !== 'all' && !accounts.some(a=>String(a.id)===String(saved)) ? 'all' : saved;
+  refreshAccountSelector();
 }
 
 // ═══════════ GHOST ROW COMMIT ═══════════
@@ -2426,7 +2472,8 @@ async function commitGhostMonthly(entryType){
   const amount   = parseFloat(document.getElementById(`${p}-amount`).value)||0;
   const notes    = document.getElementById(`${p}-notes`).value.trim();
   const body = {date:fullDate,payee,category,amount,entry_type:entryType,
-                status:'estimated',is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0};
+                status:'estimated',is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
+                account_id:selectedAccountId==='all'?undefined:selectedAccountId};
   try{
     const created = await resilientApiFetch(`/api/months/${currentMonth}/transactions`,
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
@@ -2454,7 +2501,8 @@ async function commitGhostAll(){
   const amount   =parseFloat(document.getElementById('gia-amount').value)||0;
   const notes    =document.getElementById('gia-notes').value.trim();
   const body={date,payee,category,amount,entry_type:entryType,status:'estimated',
-              is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0};
+              is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
+              account_id:selectedAccountId==='all'?undefined:selectedAccountId};
   try{
     const created=await resilientApiFetch('/api/transactions',
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
