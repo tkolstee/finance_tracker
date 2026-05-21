@@ -1,6 +1,6 @@
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -45,6 +45,7 @@ def migrate_1_create_core_schema(connection: sqlite3.Connection) -> None:
             is_automatic INTEGER NOT NULL DEFAULT 0,
             notes TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
+            account_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         """
@@ -90,10 +91,19 @@ def migrate_3_add_accounts_and_transfers(connection: sqlite3.Connection) -> None
     connection.execute("UPDATE transactions SET account_id=1 WHERE account_id IS NULL")
 
 
+def migrate_4_add_template_account_id(connection: sqlite3.Connection) -> None:
+    if not _column_exists(connection, "templates", "account_id"):
+        connection.execute(
+            "ALTER TABLE templates ADD COLUMN account_id INTEGER NOT NULL DEFAULT 1"
+        )
+    connection.execute("UPDATE templates SET account_id=1 WHERE account_id IS NULL")
+
+
 MIGRATIONS = (
     (1, migrate_1_create_core_schema),
     (2, migrate_2_add_month_balance_columns),
     (3, migrate_3_add_accounts_and_transfers),
+    (4, migrate_4_add_template_account_id),
 )
 
 
