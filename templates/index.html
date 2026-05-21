@@ -18,6 +18,11 @@
   <button class="nav-tab"        id="tab-template" onclick="showView('template')">Template Builder</button>
   <button class="nav-tab"        id="tab-all"      onclick="showView('all')">All Transactions</button>
   <button class="nav-tab"        id="tab-payees"   onclick="showView('payees')">Payees</button>
+  <div class="account-selector-wrap">
+    <span class="account-selector-label"><i class="bi bi-wallet2 me-1"></i>Account</span>
+    <select id="account-selector" class="account-selector" onchange="setSelectedAccount(this.value)"></select>
+    <span id="account-selector-badge" class="account-selector-badge">All Accounts</span>
+  </div>
   <span style="flex:1"></span>
   {% if is_admin %}
   <a href="/admin" style="color:var(--tx2);font-size:.78rem;text-decoration:none;padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'"><i class="bi bi-shield-lock me-1"></i>Admin</a>
