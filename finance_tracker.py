@@ -145,6 +145,40 @@ def is_transfer_txn(txn):
     return bool(txn and txn["transfer_group_id"])
 
 
+def insert_template_txn(c, month, tmpl, order_num):
+    account_id = int(tmpl["account_id"] or default_account_id(c))
+    transfer_account_id = tmpl["transfer_account_id"]
+    if transfer_account_id:
+        transfer_account_id = int(transfer_account_id)
+        transfer_group_id = uuid.uuid4().hex
+        source_id = insert_txn_row(
+            c, month=month, date=tmpl["date"] if "date" in tmpl.keys() else None,
+            payee=tmpl["payee"], category=tmpl["category"], amount=tmpl["amount"],
+            entry_type=tmpl["entry_type"], status="estimated", recurs_monthly=1,
+            is_automatic=tmpl["is_automatic"], is_adhoc=0, notes=tmpl["notes"],
+            sort_order=order_num, account_id=account_id, transfer_group_id=transfer_group_id,
+            transfer_role="source", transfer_account_id=transfer_account_id,
+        )
+        insert_txn_row(
+            c, month=month, date=tmpl["date"] if "date" in tmpl.keys() else None,
+            payee=tmpl["payee"], category=tmpl["category"], amount=tmpl["amount"],
+            entry_type=opposite_entry_type(tmpl["entry_type"]), status="estimated",
+            recurs_monthly=1, is_automatic=tmpl["is_automatic"], is_adhoc=0,
+            notes=tmpl["notes"], sort_order=order_num, account_id=transfer_account_id,
+            transfer_group_id=transfer_group_id, transfer_role="destination",
+            transfer_account_id=account_id,
+        )
+        return source_id
+    cur = insert_txn_row(
+        c, month=month, date=tmpl["date"] if "date" in tmpl.keys() else None,
+        payee=tmpl["payee"], category=tmpl["category"], amount=tmpl["amount"],
+        entry_type=tmpl["entry_type"], status="estimated", recurs_monthly=1,
+        is_automatic=tmpl["is_automatic"], is_adhoc=0, notes=tmpl["notes"],
+        sort_order=order_num, account_id=account_id,
+    )
+    return cur
+
+
 def signed(entry_type, amount):
     return amount if entry_type == "credit" else -amount
 
@@ -691,34 +725,40 @@ def push_to_template(tid):
         c.close()
         return jsonify({"error": "not found"}), 404
     if txn["transfer_group_id"]:
-        c.close()
-        return jsonify({"error": "transfer rows are not template sources"}), 400
+        if txn["transfer_role"] == "destination":
+            txn = c.execute(
+                "SELECT * FROM transactions WHERE transfer_group_id=? AND transfer_role='source' LIMIT 1",
+                (txn["transfer_group_id"],)
+            ).fetchone() or txn
+    source_txn = txn
     peers = c.execute(
         "SELECT id FROM transactions WHERE month=? AND payee=? AND entry_type=? "
         "AND is_adhoc=0 ORDER BY COALESCE(date,'9999'), id",
-        (txn["month"], txn["payee"], txn["entry_type"])).fetchall()
-    order_num   = next((i + 1 for i, r in enumerate(peers) if r["id"] == tid), 1)
+        (source_txn["month"], source_txn["payee"], source_txn["entry_type"])).fetchall()
+    order_num   = next((i + 1 for i, r in enumerate(peers) if r["id"] == source_txn["id"]), 1)
     tmpl_peers  = c.execute(
-        "SELECT * FROM templates WHERE payee=? AND entry_type=? ORDER BY sort_order,id",
-        (txn["payee"], txn["entry_type"])).fetchall()
+        "SELECT * FROM templates WHERE payee=? AND entry_type=? AND account_id=? "
+        "AND COALESCE(transfer_account_id,0)=COALESCE(?,0) ORDER BY sort_order,id",
+        (source_txn["payee"], source_txn["entry_type"], source_txn["account_id"], source_txn["transfer_account_id"])).fetchall()
     day = None
-    if txn["date"]:
+    if source_txn["date"]:
         try:
-            day = int(txn["date"].split("-")[2])
+            day = int(source_txn["date"].split("-")[2])
         except Exception:
             pass
     if order_num - 1 < len(tmpl_peers):
         tmpl = tmpl_peers[order_num - 1]
         c.execute(
-            "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=? WHERE id=?",
-            (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, txn["account_id"], tmpl["id"]))
+            "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=?,transfer_account_id=? WHERE id=?",
+            (source_txn["category"], source_txn["amount"], source_txn["is_automatic"], source_txn["notes"], day,
+             source_txn["account_id"], source_txn["transfer_account_id"], tmpl["id"]))
         rid = tmpl["id"]
     else:
         cur = c.execute(
-              "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,is_automatic,notes,sort_order,account_id)"
-              " VALUES(?,?,?,?,?,?,?,?,?)",
-            (txn["payee"], txn["category"], txn["entry_type"], txn["amount"], day,
-               txn["is_automatic"], txn["notes"], order_num * 10, txn["account_id"]))
+              "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,is_automatic,notes,sort_order,account_id,transfer_account_id)"
+              " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (source_txn["payee"], source_txn["category"], source_txn["entry_type"], source_txn["amount"], day,
+               source_txn["is_automatic"], source_txn["notes"], order_num * 10, source_txn["account_id"], source_txn["transfer_account_id"]))
         rid = cur.lastrowid
     c.commit()
     result = D(c.execute("SELECT * FROM templates WHERE id=?", (rid,)).fetchone())
@@ -744,17 +784,14 @@ def init_month(month):
     if mode == "replace_all":
         c.execute("DELETE FROM transactions WHERE month=? AND is_adhoc=0", (month,))
         for i, tmpl in enumerate(tmpls):
-            c.execute(
-                "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
-                "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
-                " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
-                (month, txn_date(tmpl), tmpl["payee"], tmpl["category"], float(tmpl["amount"]),
-                 tmpl["entry_type"], int(tmpl["is_automatic"]), tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c))))
+            tmpl = dict(tmpl)
+            tmpl["date"] = txn_date(tmpl)
+            insert_template_txn(c, month, tmpl, i)
     else:
         groups = defaultdict(list)
         for t in tmpls:
-            groups[(t["payee"], t["entry_type"])].append(t)
-        for (payee, etype), grp in groups.items():
+            groups[(t["payee"], t["entry_type"], t["account_id"], t["transfer_account_id"])].append(t)
+        for (payee, etype, account_id, transfer_account_id), grp in groups.items():
             existing = c.execute(
                 "SELECT * FROM transactions WHERE month=? AND payee=? AND entry_type=? "
                 "AND is_adhoc=0 ORDER BY COALESCE(date,'9999'),id",
@@ -832,11 +869,13 @@ def sync_templates(month):
     updated = 0
     groups  = defaultdict(list)
     for r in rows:
-        groups[(r["payee"], r["entry_type"], r["account_id"])].append(r)
-    for (payee, etype, account_id), grp in groups.items():
+        if r["transfer_group_id"] and r["transfer_role"] != "source":
+            continue
+        groups[(r["payee"], r["entry_type"], r["account_id"], r["transfer_account_id"])].append(r)
+    for (payee, etype, account_id, transfer_account_id), grp in groups.items():
         tmpl_peers = c.execute(
-            "SELECT * FROM templates WHERE payee=? AND entry_type=? AND account_id=? ORDER BY sort_order,id",
-            (payee, etype, account_id)).fetchall()
+            "SELECT * FROM templates WHERE payee=? AND entry_type=? AND account_id=? AND COALESCE(transfer_account_id,0)=COALESCE(?,0) ORDER BY sort_order,id",
+            (payee, etype, account_id, transfer_account_id)).fetchall()
         for i, txn in enumerate(grp):
             day = None
             if txn["date"]:
@@ -846,14 +885,14 @@ def sync_templates(month):
                     pass
             if i < len(tmpl_peers):
                 c.execute(
-                    "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=? WHERE id=?",
-                    (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, account_id, tmpl_peers[i]["id"]))
+                    "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=?,transfer_account_id=? WHERE id=?",
+                    (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, account_id, transfer_account_id, tmpl_peers[i]["id"]))
             else:
                 c.execute(
                     "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,"
-                    "is_automatic,notes,sort_order,account_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "is_automatic,notes,sort_order,account_id,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (payee, txn["category"], etype, txn["amount"], day,
-                     txn["is_automatic"], txn["notes"], (i + 1) * 10, account_id))
+                     txn["is_automatic"], txn["notes"], (i + 1) * 10, account_id, transfer_account_id))
             updated += 1
     c.commit()
     c.close()
@@ -878,10 +917,11 @@ def add_template():
     c   = get_user_db()
     cur = c.execute(
         "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,"
-        "is_automatic,notes,sort_order,account_id) VALUES(?,?,?,?,?,?,?,?,?)",
+        "is_automatic,notes,sort_order,account_id,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
         (d.get("payee", ""), d.get("category", ""), d.get("entry_type", "debit"),
          float(d.get("amount", 0)), d.get("day_of_month"), int(d.get("is_automatic", 0)),
-         d.get("notes"), int(d.get("sort_order", 0)), int(d.get("account_id") or default_account_id(c))))
+         d.get("notes"), int(d.get("sort_order", 0)), int(d.get("account_id") or default_account_id(c)),
+         (int(d.get("transfer_account_id")) if d.get("transfer_account_id") not in (None, "", "null") else None)))
     new_id = cur.lastrowid
     c.commit()
     return jsonify(D(c.execute("SELECT * FROM templates WHERE id=?", (new_id,)).fetchone())), 201
@@ -894,7 +934,7 @@ def update_template(tid):
     c = get_user_db()
     fields, vals = [], []
     for f in ["payee", "category", "entry_type", "amount", "day_of_month",
-              "is_automatic", "notes", "sort_order", "account_id"]:
+              "is_automatic", "notes", "sort_order", "account_id", "transfer_account_id"]:
         if f not in d:
             continue
         fields.append(f"{f}=?")
@@ -907,6 +947,8 @@ def update_template(tid):
             v = int(v) if v else None
         elif f == "account_id":
             v = int(v) if v is not None else default_account_id(c)
+        elif f == "transfer_account_id":
+            v = int(v) if v not in (None, "", "null") else None
         vals.append(v)
     if not fields:
         c.close()
