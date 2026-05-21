@@ -202,11 +202,11 @@ function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 function getPayeeAutocompleteOptions(){
   const options = new Map();
   [...payees].forEach(name=>{
-    if(name) options.set(name.toLowerCase(), {label:name, kind:'payee'});
+    if(name) options.set(`payee:${name.toLowerCase()}`, {label:name, kind:'payee'});
   });
   accounts.forEach(acc=>{
     const label = acc.name || `Account ${acc.id}`;
-    if(label) options.set(label.toLowerCase(), {label, kind:'account'});
+    if(label) options.set(`account:${String(acc.id)}`, {label, kind:'account', value:String(acc.id)});
   });
   return [...options.values()].sort((a,b)=>a.label.localeCompare(b.label));
 }
@@ -676,8 +676,8 @@ function _acPickFromInput(input){
   const items=_acItems();
   if(!items.length) return false;
   const idx=_acActiveIdx>=0 ? _acActiveIdx : 0;
-  const m=(items[idx].dataset.value || items[idx].textContent || '').trim();
-  input.value=m;
+  const m=items[idx].__acOption || {label:(items[idx].dataset.value || items[idx].textContent || '').trim(), kind:'payee'};
+  input.value=m.label;
   const cb=_acOnPick;
   _hideAC();
   cb(m);
@@ -697,6 +697,7 @@ function _showAC(input, opts, onPick, onTab){
   matches.slice(0,12).forEach((m, idx)=>{
     const item=document.createElement('div'); item.className='ac-item';
     item.dataset.value=m.label;
+    item.__acOption = m;
     if(m.kind==='account'){
       item.classList.add('ac-account');
       item.innerHTML=`<span class="account-pill" style="margin-left:0"><i class="bi bi-wallet2 me-1"></i>${m.label}</span>`;
@@ -705,7 +706,7 @@ function _showAC(input, opts, onPick, onTab){
     }
     item.onmouseenter=()=>_acSetActive(idx);
     // preventDefault keeps focus on the input so blur doesn't fire before pick
-    item.onmousedown=e=>{ e.preventDefault(); input.value=m.label; onPick(m.label); _hideAC(); };
+    item.onmousedown=e=>{ e.preventDefault(); input.value=m.label; onPick(m); _hideAC(); };
     dd.appendChild(item);
   });
   document.body.appendChild(dd); _acDrop=dd;
@@ -731,6 +732,16 @@ function acBind(input, getOpts, onPick, onTab){
     if(ev.key==='ArrowDown'){ ev.preventDefault(); _acMove(1); }
     else if(ev.key==='ArrowUp'){ ev.preventDefault(); _acMove(-1); }
   });
+}
+
+function setTemplatePayeeSelection(input, option){
+  if(!input) return;
+  const picked = option && typeof option === 'object' ? option : {label: option || '', kind: 'payee'};
+  if(picked.kind === 'account' && picked.value){
+    input.dataset.transferAccountId = String(picked.value);
+  }else{
+    delete input.dataset.transferAccountId;
+  }
 }
 
 async function refreshSuggestions(){
@@ -1446,7 +1457,8 @@ function computeTmplBadges(){
   const sorted=[...templates].sort((a,b)=>a.sort_order-b.sort_order||a.id-b.id);
   const seen={};
   for(const t of sorted){
-    const k=`${t.payee}|${t.entry_type}`; seen[k]=(seen[k]||0)+1; tmplBadges[t.id]=seen[k];
+    const k=`${t.payee}|${t.entry_type}|${t.account_id}|${t.transfer_account_id||''}`;
+    seen[k]=(seen[k]||0)+1; tmplBadges[t.id]=seen[k];
   }
 }
 
@@ -1454,7 +1466,9 @@ function computeTmplBadges(){
 function pushStatus(txn){
   if(txn.transfer_group_id) return 'transfer';
   const myOrder=payeeBadges[txn.id]||1;
-  const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type)
+  const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type
+    && String(t.account_id||'')===String(txn.account_id||'')
+    && String(t.transfer_account_id||'')===String(txn.transfer_account_id||''))
     .sort((a,b)=>a.sort_order-b.sort_order||a.id-b.id);
   const match=peers[myOrder-1];
   if(!match) return 'pnew';
@@ -1627,10 +1641,10 @@ function makeEC(txn, field, type, extraClass, section){
 
     if(field==='category'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>[...categories].sort(), v=>{ el.value=v; }, makeOnTab);
+      acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>getPayeeAutocompleteOptions(), v=>{ el.value=v; }, makeOnTab);
+      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='entry_type'){
       el=document.createElement('select'); el.className='cell-select';
       ['credit','debit'].forEach(v=>{
@@ -1748,10 +1762,10 @@ function makeEC(txn, field, type, extraClass, section){
 
     if(field==='category'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>[...categories].sort(), v=>{ el.value=v; }, makeOnTab);
+      acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>getPayeeAutocompleteOptions(), v=>{ el.value=v; }, makeOnTab);
+      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='entry_type'){
       el=document.createElement('select'); el.className='cell-select';
       ['credit','debit'].forEach(v=>{
@@ -2208,8 +2222,15 @@ function getTemplateGhostAccountId(prefix){
 }
 function makeTmplPayeeSpan(tmpl, section){
   const span=document.createElement('span');
-  span.textContent=tmpl.payee||'';
-  const total=section.filter(t=>t.payee===tmpl.payee&&t.entry_type===tmpl.entry_type).length;
+  if(tmpl.transfer_account_id){
+    span.className='transfer-payee';
+    span.innerHTML=`<span class="account-pill" style="margin-left:0"><i class="bi bi-arrow-left-right me-1"></i>${getAccountName(tmpl.transfer_account_id)}</span>`;
+  }else{
+    span.textContent=tmpl.payee||'';
+  }
+  const total=section.filter(t=>t.payee===tmpl.payee&&t.entry_type===tmpl.entry_type
+    && String(t.account_id||'')===String(tmpl.account_id||'')
+    && String(t.transfer_account_id||'')===String(tmpl.transfer_account_id||'')).length;
   if(total>1){
     const b=document.createElement('span');
     b.className='pbadge'; b.textContent='#'+(tmplBadges[tmpl.id]||1);
@@ -2278,10 +2299,15 @@ function makeTmplEC(tmpl,field,type,style,section){
 
     if(field==='category'){
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=tmpl[field]||'';
-      acBind(el, ()=>[...categories].sort(), v=>{ el.value=v; }, makeOnTab);
+      acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=tmpl[field]||'';
-      acBind(el, ()=>getPayeeAutocompleteOptions(), v=>{ el.value=v; }, makeOnTab);
+      if(tmpl.transfer_account_id) el.dataset.transferAccountId = String(tmpl.transfer_account_id);
+      el.addEventListener('input', ()=>{ delete el.dataset.transferAccountId; });
+      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{
+        el.value=opt?.label||opt||'';
+        setTemplatePayeeSelection(el, opt);
+      }, makeOnTab);
     }else if(field==='account_id'){
       el=document.createElement('select');el.className='cell-select';
       accounts.forEach(acc=>{
@@ -2304,9 +2330,18 @@ function makeTmplEC(tmpl,field,type,style,section){
       else if(field==='day_of_month') v=parseInt(v)||null;
       else if(field==='account_id') v=parseInt(v,10)||getSelectedAccountIds()[0]||accounts[0]?.id||1;
       const latest=getTmplById(tmpl.id) || tmpl;
+      if(field==='payee'){
+        const transferAccountId = el.dataset.transferAccountId ? parseInt(el.dataset.transferAccountId,10) : null;
+        const payeeChanged = !valuesEqual('payee', latest.payee, v);
+        const transferChanged = String(latest.transfer_account_id||'') !== String(transferAccountId||'');
+        if(!payeeChanged && !transferChanged) return false;
+        if(v) addPayee(v);
+        if(payeeChanged) updateTmpl(tmpl.id,'payee',v);
+        if(transferChanged) updateTmpl(tmpl.id,'transfer_account_id',transferAccountId);
+        return true;
+      }
       if(valuesEqual(field, latest[field], v)) return false;
       if(field==='category'&&v) addCat(v);
-      if(field==='payee'&&v) addPayee(v);
       updateTmpl(tmpl.id,field,v);
       return true;
     };
@@ -2430,7 +2465,9 @@ function computeAllPayeeBadges(){
 function pushStatusAll(txn){
   if(txn.transfer_group_id) return 'transfer';
   const myOrder=allPayeeBadges[txn.id]||1;
-  const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type)
+  const peers=templates.filter(t=>t.payee===txn.payee&&t.entry_type===txn.entry_type
+    && String(t.account_id||'')===String(txn.account_id||'')
+    && String(t.transfer_account_id||'')===String(txn.transfer_account_id||''))
     .sort((a,b)=>a.sort_order-b.sort_order||a.id-b.id);
   const match=peers[myOrder-1];
   if(!match) return 'pnew';
@@ -2492,13 +2529,13 @@ function makeAllEC(txn,field,type,extraClass,section){
 
     if(field==='category'){
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
-      acBind(el,()=>[...categories].sort(),v=>{el.value=v;},makeOnTab);
+      acBind(el,()=>[...categories].sort(),opt=>{el.value=opt?.label||opt||'';},makeOnTab);
     }else if(field==='payee'){
       if(txn.transfer_group_id){
         return;
       }
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
-      acBind(el,()=>getPayeeAutocompleteOptions(),v=>{el.value=v;},makeOnTab);
+      acBind(el,()=>getPayeeAutocompleteOptions(),opt=>{el.value=opt?.label||opt||'';},makeOnTab);
     }else if(field==='entry_type'){
       el=document.createElement('select');el.className='cell-select';
       ['credit','debit'].forEach(v=>{
@@ -2888,6 +2925,7 @@ async function commitGhostTmpl(entryType){
   const p = entryType==='credit' ? 'gt-inc' : 'gt-exp';
   const accountId = getTemplateGhostAccountId(p);
   const payee    = document.getElementById(`${p}-payee`).value.trim();
+  const transferAccountId = document.getElementById(`${p}-payee`)?.dataset.transferAccountId || '';
   const category = document.getElementById(`${p}-cat`).value.trim();
   const dayRaw   = parseInt(document.getElementById(`${p}-day`).value,10)||1;
   const day      = Math.max(1,Math.min(31,dayRaw));
@@ -2895,6 +2933,7 @@ async function commitGhostTmpl(entryType){
   const isAuto   = parseInt(document.getElementById(`${p}-auto`).value,10)||0;
   const notes    = document.getElementById(`${p}-notes`).value.trim();
   const body = {payee,category,entry_type:entryType,amount,day_of_month:day,is_automatic:isAuto,notes,account_id:accountId};
+  if(transferAccountId) body.transfer_account_id = transferAccountId;
   try{
     const created = await readJsonResponse(await resilientApiFetch('/api/templates',
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
@@ -2911,6 +2950,8 @@ function clearGhostTmpl(entryType){
   ['payee','cat','day','amount','notes'].forEach(f=>{
     const el=document.getElementById(`${p}-${f}`); if(el) el.value='';
   });
+  const payeeEl=document.getElementById(`${p}-payee`);
+  if(payeeEl) delete payeeEl.dataset.transferAccountId;
   const autoEl=document.getElementById(`${p}-auto`); if(autoEl) autoEl.value='0';
 }
 async function commitGhostMonthly(entryType){
@@ -2984,8 +3025,11 @@ function initGhostRows(){
   const wire=(pfx, inputIds, commitFn)=>{
     const payeeEl=document.getElementById(`${pfx}-payee`);
     const catEl  =document.getElementById(`${pfx}-cat`);
-    if(payeeEl) acBind(payeeEl,()=>getPayeeAutocompleteOptions(),v=>{ payeeEl.value=v; },null);
-    if(catEl)   acBind(catEl,  ()=>[...categories].sort(),v=>{ catEl.value=v; },null);
+    if(payeeEl){
+      payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; });
+      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; },null);
+    }
+    if(catEl)   acBind(catEl,  ()=>[...categories].sort(),opt=>{ catEl.value=opt?.label||opt||''; },null);
     inputIds.forEach((id, i)=>{
       const el=document.getElementById(id); if(!el) return;
       const isLast = i === inputIds.length - 1;
@@ -3020,8 +3064,8 @@ function initGhostRows(){
   // All-transactions ghost row
   const giaPayee=document.getElementById('gia-payee');
   const giaCat  =document.getElementById('gia-cat');
-  if(giaPayee) acBind(giaPayee,()=>getPayeeAutocompleteOptions(),v=>{ giaPayee.value=v; },null);
-  if(giaCat)   acBind(giaCat,  ()=>[...categories].sort(),v=>{ giaCat.value=v; },null);
+  if(giaPayee) acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; },null);
+  if(giaCat)   acBind(giaCat,  ()=>[...categories].sort(),opt=>{ giaCat.value=opt?.label||opt||''; },null);
   const giaIds=['gia-date','gia-payee','gia-cat','gia-amount','gia-notes'];
   giaIds.forEach((id, i)=>{
     const el=document.getElementById(id); if(!el) return;
