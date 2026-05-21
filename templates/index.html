@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ config.APP_VERSION }}-payees4">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ config.APP_VERSION }}-payees5">
 </head>
 <body>
 
@@ -20,9 +20,9 @@
   <button class="nav-tab"        id="tab-payees"   onclick="showView('payees')">Payees</button>
   <button class="nav-tab"        id="tab-accounts" onclick="showView('accounts')">Accounts</button>
   <div class="account-selector-wrap">
-    <span class="account-selector-label"><i class="bi bi-wallet2 me-1"></i>Account</span>
-    <select id="account-selector" class="account-selector" onchange="setSelectedAccount(this.value)"></select>
-    <span id="account-selector-badge" class="account-selector-badge">All Accounts</span>
+    <button type="button" id="account-selector-button" class="account-selector-btn" onclick="toggleAccountSelectorPanel()">All Accounts</button>
+    <div id="account-selector-panel" class="account-selector-panel"></div>
+    <button type="button" class="btn-ol btn-sm" onclick="showView('accounts')">Manage</button>
   </div>
   <span style="flex:1"></span>
   {% if is_admin %}
@@ -94,6 +94,7 @@
     <button class="btn-ac btn-sm" onclick="initMonthFromTemplate()">
       <i class="bi bi-lightning me-1"></i>Init from Template
     </button>
+    <span id="monthly-account-label" class="monthly-account-label">Viewing: All Accounts</span>
   </div>
 
   <!-- transactions -->
@@ -103,9 +104,9 @@
       Income <span class="section-sum" id="income-sum"></span>
     </div>
     <table class="txn-table" id="tbl-income"><thead><tr>
+      <th class="w-ac account-col th-sort" data-sort="income-body:account_id">Account <span class="sort-icon" id="si-income-account"></span></th>
       <th class="w-dt th-sort" data-sort="income-body:date">Date <span class="sort-icon" id="si-income-date">↑</span></th>
       <th class="w-py th-sort" data-sort="income-body:payee">Source <span class="sort-icon" id="si-income-payee"></span></th>
-      <th class="w-ac account-col th-sort" data-sort="income-body:account_id">Account <span class="sort-icon" id="si-income-account"></span></th>
       <th class="w-ca th-sort" data-sort="income-body:category">Category <span class="sort-icon" id="si-income-category"></span></th>
       <th class="w-am th-sort" data-sort="income-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-income-amount"></span></th>
       <th class="w-no th-sort" data-sort="income-body:notes">Memo <span class="sort-icon" id="si-income-notes"></span></th>
@@ -116,9 +117,9 @@
     </tr></thead>
     <tbody id="income-body"></tbody>
     <tfoot><tr class="ghost-row">
+      <td class="account-col"><select class="ghost-inp ghost-sel" id="gi-inc-account"></select></td>
       <td><input class="ghost-inp" id="gi-inc-date" type="number" min="1" max="31" placeholder="Day"></td>
       <td><input class="ghost-inp" id="gi-inc-payee" type="text" placeholder="Source"></td>
-      <td class="account-col"></td>
       <td><input class="ghost-inp" id="gi-inc-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gi-inc-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
       <td><input class="ghost-inp" id="gi-inc-notes" type="text" placeholder="Memo"></td>
@@ -131,9 +132,9 @@
       Expenses <span class="section-sum" id="expense-sum"></span>
     </div>
     <table class="txn-table" id="tbl-expense"><thead><tr>
+      <th class="w-ac account-col th-sort" data-sort="expense-body:account_id">Account <span class="sort-icon" id="si-expense-account"></span></th>
       <th class="w-dt th-sort" data-sort="expense-body:date">Date <span class="sort-icon" id="si-expense-date">↑</span></th>
       <th class="w-py th-sort" data-sort="expense-body:payee">Payee <span class="sort-icon" id="si-expense-payee"></span></th>
-      <th class="w-ac account-col th-sort" data-sort="expense-body:account_id">Account <span class="sort-icon" id="si-expense-account"></span></th>
       <th class="w-ca th-sort" data-sort="expense-body:category">Category <span class="sort-icon" id="si-expense-category"></span></th>
       <th class="w-am th-sort" data-sort="expense-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-expense-amount"></span></th>
       <th class="w-no th-sort" data-sort="expense-body:notes">Memo <span class="sort-icon" id="si-expense-notes"></span></th>
@@ -144,9 +145,9 @@
     </tr></thead>
     <tbody id="expense-body"></tbody>
     <tfoot><tr class="ghost-row">
+      <td class="account-col"><select class="ghost-inp ghost-sel" id="gi-exp-account"></select></td>
       <td><input class="ghost-inp" id="gi-exp-date" type="number" min="1" max="31" placeholder="Day"></td>
       <td><input class="ghost-inp" id="gi-exp-payee" type="text" placeholder="Payee"></td>
-      <td class="account-col"></td>
       <td><input class="ghost-inp" id="gi-exp-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gi-exp-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
       <td><input class="ghost-inp" id="gi-exp-notes" type="text" placeholder="Memo"></td>
@@ -173,6 +174,7 @@
       <i class="bi bi-arrow-down-circle-fill" style="color:var(--gn)"></i> Income Templates
     </div>
     <table class="tmpl-table"><thead><tr>
+      <th style="width:150px" class="th-sort" data-sort="tmpl-income-body:account_id">From Account <span class="sort-icon" id="si-tmpl-income-account"></span></th>
       <th style="width:190px" class="th-sort" data-sort="tmpl-income-body:payee">Source <span class="sort-icon" id="si-tmpl-income-payee"></span></th>
       <th style="width:150px" class="th-sort" data-sort="tmpl-income-body:category">Category <span class="sort-icon" id="si-tmpl-income-category"></span></th>
       <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-income-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-income-day">↑</span></th>
@@ -182,6 +184,7 @@
     </tr></thead>
     <tbody id="tmpl-income-body"></tbody>
     <tfoot><tr class="ghost-row">
+      <td><select class="ghost-inp ghost-sel" id="gt-inc-account"></select></td>
       <td><input class="ghost-inp" id="gt-inc-payee" type="text" placeholder="Source"></td>
       <td><input class="ghost-inp" id="gt-inc-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gt-inc-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>
@@ -198,6 +201,7 @@
       <i class="bi bi-arrow-up-circle-fill" style="color:var(--rd)"></i> Expense Templates
     </div>
     <table class="tmpl-table"><thead><tr>
+      <th style="width:150px" class="th-sort" data-sort="tmpl-expense-body:account_id">From Account <span class="sort-icon" id="si-tmpl-expense-account"></span></th>
       <th style="width:190px" class="th-sort" data-sort="tmpl-expense-body:payee">Payee <span class="sort-icon" id="si-tmpl-expense-payee"></span></th>
       <th style="width:150px" class="th-sort" data-sort="tmpl-expense-body:category">Category <span class="sort-icon" id="si-tmpl-expense-category"></span></th>
       <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-expense-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-expense-day">↑</span></th>
@@ -207,6 +211,7 @@
     </tr></thead>
     <tbody id="tmpl-expense-body"></tbody>
     <tfoot><tr class="ghost-row">
+      <td><select class="ghost-inp ghost-sel" id="gt-exp-account"></select></td>
       <td><input class="ghost-inp" id="gt-exp-payee" type="text" placeholder="Payee"></td>
       <td><input class="ghost-inp" id="gt-exp-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gt-exp-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>
@@ -417,6 +422,51 @@
   </div>
 </div>
 
+<div class="modal-bg" id="transfer-modal">
+  <div class="modal-box transfer-modal-box">
+    <h4><i class="bi bi-arrow-left-right me-2" style="color:var(--ac)"></i>Transfer Transaction</h4>
+    <p>Move money between accounts with paired ledger entries.</p>
+    <div class="transfer-form">
+      <div class="transfer-grid">
+        <label class="transfer-from-field">
+          <span>From Account</span>
+          <select id="transfer-from-account" class="ghost-inp ghost-sel"></select>
+        </label>
+        <label class="transfer-to-field">
+          <span>To Account</span>
+          <select id="transfer-to-account" class="ghost-inp ghost-sel"></select>
+        </label>
+      </div>
+      <div class="transfer-grid">
+        <label>
+          <span>Date</span>
+          <input id="transfer-date" class="ghost-inp" type="date">
+        </label>
+        <label>
+          <span>Status</span>
+          <select id="transfer-status" class="ghost-inp ghost-sel">
+            <option value="estimated">Estimated</option>
+            <option value="actual">Actual</option>
+            <option value="reconciled">Reconciled</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        <span>Amount</span>
+        <input id="transfer-amount" class="ghost-inp" type="number" min="0" step="0.01" placeholder="0.00">
+      </label>
+      <label>
+        <span>Memo</span>
+        <input id="transfer-notes" class="ghost-inp" type="text" placeholder="Optional note">
+      </label>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn-ol" type="button" onclick="closeTransferModal()">Cancel</button>
+      <button class="btn-ac" type="button" onclick="commitTransfer()">Create Transfer</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="conn-modal">
   <div class="modal-box conn-modal-box">
     <h4><i class="bi bi-wifi-off me-2" style="color:var(--am)"></i>Connection Lost</h4>
@@ -465,6 +515,6 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees4"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees5"></script>
 </body>
 </html>

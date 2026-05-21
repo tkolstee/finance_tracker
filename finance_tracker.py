@@ -61,9 +61,11 @@ def get_user_db():
     udir   = user_data_dir(DATA_DIR, user["dir_name"])
     dbpath = user_db_path(DATA_DIR, user["dir_name"])
     os.makedirs(udir, exist_ok=True)
-    c = sqlite3.connect(dbpath)
+    c = sqlite3.connect(dbpath, timeout=30)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=30000")
     ensure_schema(c)
     return c
 
@@ -103,7 +105,7 @@ def insert_txn_row(c, *, month, date, payee, category, amount, entry_type, statu
     cur = c.execute(
         "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
         "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id,"
-        "transfer_group_id,transfer_role,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "transfer_group_id,transfer_role,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (month, date, payee, category, float(amount), entry_type, status,
          int(recurs_monthly), int(is_automatic), int(is_adhoc), notes, int(sort_order),
          int(account_id), transfer_group_id, transfer_role, transfer_account_id)
@@ -152,10 +154,37 @@ def get_first_month(c):
     return row["month"] if row else None
 
 
-def compute_bf_for_month(c, month):
+def parse_account_ids_arg(args):
+    raw = args.get("account_ids") or args.get("account_id")
+    if raw is None or str(raw).lower() in ("", "all", "null", "none"):
+        return None
+    account_ids = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            account_ids.append(int(part))
+    return account_ids or None
+
+
+def compute_bf_for_month(c, month, account_ids=None):
     first = c.execute(
         "SELECT month,bf_estimated,bf_actual,bf_reconciled FROM months ORDER BY month LIMIT 1"
     ).fetchone()
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"SELECT month,entry_type,amount,status FROM transactions WHERE account_id IN ({placeholders}) AND month<? ORDER BY month",
+            (*account_ids, month)
+        ).fetchall()
+        bf_est = bf_act = bf_rec = 0.0
+        for r in rows:
+            amount = signed(r["entry_type"], r["amount"])
+            bf_est = round(bf_est + amount, 2)
+            if r["status"] in ("actual", "reconciled"):
+                bf_act = round(bf_act + amount, 2)
+            if r["status"] == "reconciled":
+                bf_rec = round(bf_rec + amount, 2)
+        return (bf_est, bf_act, bf_rec)
     if not first or month <= first["month"]:
         if not first:
             return (0.0, 0.0, 0.0)
@@ -412,12 +441,20 @@ def update_month_bf(month):
 @require_auth
 def month_balances(month):
     c        = get_user_db()
+    account_ids = parse_account_ids_arg(request.args)
     first    = get_first_month(c)
     is_first = (first is None or month == first)
-    bf_est, bf_act, bf_rec = compute_bf_for_month(c, month)
-    rows = c.execute(
-        "SELECT entry_type,amount,status FROM transactions WHERE month=?", (month,)
-    ).fetchall()
+    bf_est, bf_act, bf_rec = compute_bf_for_month(c, month, account_ids)
+    if not account_ids:
+        rows = c.execute(
+            "SELECT entry_type,amount,status FROM transactions WHERE month=?", (month,)
+        ).fetchall()
+    else:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"SELECT entry_type,amount,status FROM transactions WHERE month=? AND account_id IN ({placeholders})",
+            (month, *account_ids)
+        ).fetchall()
     c.close()
     s = lambda r: signed(r["entry_type"], r["amount"])
     return jsonify({
@@ -435,17 +472,25 @@ def month_balances(month):
 @require_auth
 def global_balances():
     c     = get_user_db()
-    first = c.execute(
-        "SELECT bf_estimated,bf_actual,bf_reconciled FROM months ORDER BY month LIMIT 1"
-    ).fetchone()
-    bf_est = float(first["bf_estimated"]) if first else 0.0
-    bf_act = float(first["bf_actual"])    if first else 0.0
-    bf_rec = float(first["bf_reconciled"]) if first else 0.0
-    today  = date.today().isoformat()
-    rows   = c.execute(
-        "SELECT entry_type,amount,status FROM transactions WHERE date IS NOT NULL AND date<=?",
-        (today,)
-    ).fetchall()
+    account_ids = parse_account_ids_arg(request.args)
+    if not account_ids:
+        first = c.execute(
+            "SELECT bf_estimated,bf_actual,bf_reconciled FROM months ORDER BY month LIMIT 1"
+        ).fetchone()
+        bf_est = float(first["bf_estimated"]) if first else 0.0
+        bf_act = float(first["bf_actual"])    if first else 0.0
+        bf_rec = float(first["bf_reconciled"]) if first else 0.0
+        rows   = c.execute(
+            "SELECT entry_type,amount,status FROM transactions WHERE date IS NOT NULL AND date<=?",
+            (date.today().isoformat(),)
+        ).fetchall()
+    else:
+        bf_est = bf_act = bf_rec = 0.0
+        placeholders = ",".join("?" for _ in account_ids)
+        rows   = c.execute(
+            f"SELECT entry_type,amount,status FROM transactions WHERE date IS NOT NULL AND date<=? AND account_id IN ({placeholders})",
+            (date.today().isoformat(), *account_ids)
+        ).fetchall()
     c.close()
     s = lambda r: signed(r["entry_type"], r["amount"])
     return jsonify({
@@ -665,15 +710,15 @@ def push_to_template(tid):
     if order_num - 1 < len(tmpl_peers):
         tmpl = tmpl_peers[order_num - 1]
         c.execute(
-            "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=? WHERE id=?",
-            (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, tmpl["id"]))
+            "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=? WHERE id=?",
+            (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, txn["account_id"], tmpl["id"]))
         rid = tmpl["id"]
     else:
         cur = c.execute(
-            "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,is_automatic,notes,sort_order)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+              "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,is_automatic,notes,sort_order,account_id)"
+              " VALUES(?,?,?,?,?,?,?,?,?)",
             (txn["payee"], txn["category"], txn["entry_type"], txn["amount"], day,
-             txn["is_automatic"], txn["notes"], order_num * 10))
+               txn["is_automatic"], txn["notes"], order_num * 10, txn["account_id"]))
         rid = cur.lastrowid
     c.commit()
     result = D(c.execute("SELECT * FROM templates WHERE id=?", (rid,)).fetchone())
@@ -704,7 +749,7 @@ def init_month(month):
                 "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
                 " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
                 (month, txn_date(tmpl), tmpl["payee"], tmpl["category"], float(tmpl["amount"]),
-                 tmpl["entry_type"], int(tmpl["is_automatic"]), tmpl["notes"], i, default_account_id(c)))
+                 tmpl["entry_type"], int(tmpl["is_automatic"]), tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c))))
     else:
         groups = defaultdict(list)
         for t in tmpls:
@@ -719,9 +764,9 @@ def init_month(month):
                 if i < len(existing):
                     c.execute(
                         "UPDATE transactions SET category=?,amount=?,is_automatic=?,"
-                        "notes=?,recurs_monthly=1,sort_order=? WHERE id=?",
+                        "notes=?,recurs_monthly=1,sort_order=?,account_id=? WHERE id=?",
                         (tmpl["category"], float(tmpl["amount"]), int(tmpl["is_automatic"]),
-                         tmpl["notes"], i, existing[i]["id"]))
+                         tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c)), existing[i]["id"]))
                     if td and not existing[i]["date"]:
                         c.execute("UPDATE transactions SET date=? WHERE id=?", (td, existing[i]["id"]))
                 else:
@@ -730,7 +775,7 @@ def init_month(month):
                         "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
                         " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
                         (month, td, payee, tmpl["category"], float(tmpl["amount"]), etype,
-                         int(tmpl["is_automatic"]), tmpl["notes"], i, default_account_id(c)))
+                             int(tmpl["is_automatic"]), tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c))))
     c.commit()
     n = c.execute("SELECT COUNT(*) n FROM transactions WHERE month=?", (month,)).fetchone()["n"]
     c.close()
@@ -741,11 +786,20 @@ def init_month(month):
 @require_auth
 def daily_balances(month):
     c = get_user_db()
-    bf_est, bf_act, _ = compute_bf_for_month(c, month)
-    rows = c.execute(
-        "SELECT date,amount,entry_type,status FROM transactions "
-        "WHERE month=? AND date IS NOT NULL ORDER BY date,id", (month,)
-    ).fetchall()
+    account_ids = parse_account_ids_arg(request.args)
+    bf_est, bf_act, _ = compute_bf_for_month(c, month, account_ids)
+    if not account_ids:
+        rows = c.execute(
+            "SELECT date,amount,entry_type,status FROM transactions "
+            "WHERE month=? AND date IS NOT NULL ORDER BY date,id", (month,)
+        ).fetchall()
+    else:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"SELECT date,amount,entry_type,status FROM transactions "
+            f"WHERE month=? AND date IS NOT NULL AND account_id IN ({placeholders}) ORDER BY date,id",
+            (month, *account_ids)
+        ).fetchall()
     c.close()
     year, mo = int(month[:4]), int(month[5:])
     last  = calendar.monthrange(year, mo)[1]
@@ -778,11 +832,11 @@ def sync_templates(month):
     updated = 0
     groups  = defaultdict(list)
     for r in rows:
-        groups[(r["payee"], r["entry_type"])].append(r)
-    for (payee, etype), grp in groups.items():
+        groups[(r["payee"], r["entry_type"], r["account_id"])].append(r)
+    for (payee, etype, account_id), grp in groups.items():
         tmpl_peers = c.execute(
-            "SELECT * FROM templates WHERE payee=? AND entry_type=? ORDER BY sort_order,id",
-            (payee, etype)).fetchall()
+            "SELECT * FROM templates WHERE payee=? AND entry_type=? AND account_id=? ORDER BY sort_order,id",
+            (payee, etype, account_id)).fetchall()
         for i, txn in enumerate(grp):
             day = None
             if txn["date"]:
@@ -792,14 +846,14 @@ def sync_templates(month):
                     pass
             if i < len(tmpl_peers):
                 c.execute(
-                    "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=? WHERE id=?",
-                    (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, tmpl_peers[i]["id"]))
+                    "UPDATE templates SET category=?,amount=?,is_automatic=?,notes=?,day_of_month=?,account_id=? WHERE id=?",
+                    (txn["category"], txn["amount"], txn["is_automatic"], txn["notes"], day, account_id, tmpl_peers[i]["id"]))
             else:
                 c.execute(
                     "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,"
-                    "is_automatic,notes,sort_order) VALUES(?,?,?,?,?,?,?,?)",
+                    "is_automatic,notes,sort_order,account_id) VALUES(?,?,?,?,?,?,?,?,?)",
                     (payee, txn["category"], etype, txn["amount"], day,
-                     txn["is_automatic"], txn["notes"], (i + 1) * 10))
+                     txn["is_automatic"], txn["notes"], (i + 1) * 10, account_id))
             updated += 1
     c.commit()
     c.close()
@@ -824,10 +878,10 @@ def add_template():
     c   = get_user_db()
     cur = c.execute(
         "INSERT INTO templates(payee,category,entry_type,amount,day_of_month,"
-        "is_automatic,notes,sort_order) VALUES(?,?,?,?,?,?,?,?)",
+        "is_automatic,notes,sort_order,account_id) VALUES(?,?,?,?,?,?,?,?,?)",
         (d.get("payee", ""), d.get("category", ""), d.get("entry_type", "debit"),
          float(d.get("amount", 0)), d.get("day_of_month"), int(d.get("is_automatic", 0)),
-         d.get("notes"), int(d.get("sort_order", 0))))
+         d.get("notes"), int(d.get("sort_order", 0)), int(d.get("account_id") or default_account_id(c))))
     new_id = cur.lastrowid
     c.commit()
     return jsonify(D(c.execute("SELECT * FROM templates WHERE id=?", (new_id,)).fetchone())), 201
@@ -837,9 +891,10 @@ def add_template():
 @require_auth
 def update_template(tid):
     d = request.get_json()
+    c = get_user_db()
     fields, vals = [], []
     for f in ["payee", "category", "entry_type", "amount", "day_of_month",
-              "is_automatic", "notes", "sort_order"]:
+              "is_automatic", "notes", "sort_order", "account_id"]:
         if f not in d:
             continue
         fields.append(f"{f}=?")
@@ -850,11 +905,13 @@ def update_template(tid):
             v = int(v) if v is not None else 0
         elif f == "day_of_month":
             v = int(v) if v else None
+        elif f == "account_id":
+            v = int(v) if v is not None else default_account_id(c)
         vals.append(v)
     if not fields:
+        c.close()
         return jsonify({"error": "no fields"}), 400
     vals.append(tid)
-    c = get_user_db()
     c.execute(f"UPDATE templates SET {','.join(fields)} WHERE id=?", vals)
     c.commit()
     return jsonify(D(c.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()))
