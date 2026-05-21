@@ -18,6 +18,7 @@
   <button class="nav-tab"        id="tab-template" onclick="showView('template')">Template Builder</button>
   <button class="nav-tab"        id="tab-all"      onclick="showView('all')">All Transactions</button>
   <button class="nav-tab"        id="tab-payees"   onclick="showView('payees')">Payees</button>
+  <button class="nav-tab"        id="tab-accounts" onclick="showView('accounts')">Accounts</button>
   <div class="account-selector-wrap">
     <span class="account-selector-label"><i class="bi bi-wallet2 me-1"></i>Account</span>
     <select id="account-selector" class="account-selector" onchange="setSelectedAccount(this.value)"></select>
@@ -104,6 +105,7 @@
     <table class="txn-table" id="tbl-income"><thead><tr>
       <th class="w-dt th-sort" data-sort="income-body:date">Date <span class="sort-icon" id="si-income-date">↑</span></th>
       <th class="w-py th-sort" data-sort="income-body:payee">Source <span class="sort-icon" id="si-income-payee"></span></th>
+      <th class="w-ac account-col th-sort" data-sort="income-body:account_id">Account <span class="sort-icon" id="si-income-account"></span></th>
       <th class="w-ca th-sort" data-sort="income-body:category">Category <span class="sort-icon" id="si-income-category"></span></th>
       <th class="w-am th-sort" data-sort="income-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-income-amount"></span></th>
       <th class="w-no th-sort" data-sort="income-body:notes">Memo <span class="sort-icon" id="si-income-notes"></span></th>
@@ -116,11 +118,12 @@
     <tfoot><tr class="ghost-row">
       <td><input class="ghost-inp" id="gi-inc-date" type="number" min="1" max="31" placeholder="Day"></td>
       <td><input class="ghost-inp" id="gi-inc-payee" type="text" placeholder="Source"></td>
+      <td class="account-col"></td>
       <td><input class="ghost-inp" id="gi-inc-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gi-inc-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
       <td><input class="ghost-inp" id="gi-inc-notes" type="text" placeholder="Memo"></td>
       <td colspan="3"></td>
-      <td><button class="ghost-commit-btn" onclick="commitGhostMonthly('credit')" title="Add row (Enter)">⮐</button></td>
+      <td><button type="button" class="ghost-commit-btn" onclick="commitGhostMonthly('credit')" title="Add row (Enter)">⮐</button></td>
     </tr></tfoot></table>
 
     <div class="section-header" style="margin-top:1px">
@@ -130,6 +133,7 @@
     <table class="txn-table" id="tbl-expense"><thead><tr>
       <th class="w-dt th-sort" data-sort="expense-body:date">Date <span class="sort-icon" id="si-expense-date">↑</span></th>
       <th class="w-py th-sort" data-sort="expense-body:payee">Payee <span class="sort-icon" id="si-expense-payee"></span></th>
+      <th class="w-ac account-col th-sort" data-sort="expense-body:account_id">Account <span class="sort-icon" id="si-expense-account"></span></th>
       <th class="w-ca th-sort" data-sort="expense-body:category">Category <span class="sort-icon" id="si-expense-category"></span></th>
       <th class="w-am th-sort" data-sort="expense-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-expense-amount"></span></th>
       <th class="w-no th-sort" data-sort="expense-body:notes">Memo <span class="sort-icon" id="si-expense-notes"></span></th>
@@ -142,11 +146,12 @@
     <tfoot><tr class="ghost-row">
       <td><input class="ghost-inp" id="gi-exp-date" type="number" min="1" max="31" placeholder="Day"></td>
       <td><input class="ghost-inp" id="gi-exp-payee" type="text" placeholder="Payee"></td>
+      <td class="account-col"></td>
       <td><input class="ghost-inp" id="gi-exp-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gi-exp-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
       <td><input class="ghost-inp" id="gi-exp-notes" type="text" placeholder="Memo"></td>
       <td colspan="3"></td>
-      <td><button class="ghost-commit-btn" onclick="commitGhostMonthly('debit')" title="Add row (Enter)">⮐</button></td>
+      <td><button type="button" class="ghost-commit-btn" onclick="commitGhostMonthly('debit')" title="Add row (Enter)">⮐</button></td>
     </tr></tfoot></table>
 
     <div style="height:40px"></div>
@@ -320,6 +325,7 @@
       <th class="w-dt-full th-sort" data-sort="all-body:date">Date <span class="sort-icon" id="si-all-date">↑</span></th>
       <th class="w-etype th-sort" data-sort="all-body:entry_type">Type <span class="sort-icon" id="si-all-entry_type"></span></th>
       <th class="w-py th-sort" data-sort="all-body:payee">Payee <span class="sort-icon" id="si-all-payee"></span></th>
+      <th class="w-ac account-col th-sort" data-sort="all-body:account_id">Account <span class="sort-icon" id="si-all-account"></span></th>
       <th class="w-ca th-sort" data-sort="all-body:category">Category <span class="sort-icon" id="si-all-category"></span></th>
       <th class="w-am th-sort" data-sort="all-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-all-amount"></span></th>
       <th class="w-no th-sort" data-sort="all-body:notes">Memo <span class="sort-icon" id="si-all-notes"></span></th>
@@ -336,15 +342,67 @@
         <option value="credit">Income</option>
       </select></td>
       <td><input class="ghost-inp" id="gia-payee" type="text" placeholder="Payee"></td>
+      <td class="account-col"></td>
       <td><input class="ghost-inp" id="gia-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gia-amount" type="number" min="0" step="0.01" placeholder="0.00"></td>
       <td><input class="ghost-inp" id="gia-notes" type="text" placeholder="Memo"></td>
       <td colspan="3"></td>
-      <td><button class="ghost-commit-btn" onclick="commitGhostAll()" title="Add row (Enter)">⮐</button></td>
+      <td><button type="button" class="ghost-commit-btn" onclick="commitGhostAll()" title="Add row (Enter)">⮐</button></td>
     </tr></tfoot></table>
     <div style="height:40px"></div>
   </div>
 </div><!-- /all -->
+
+<!-- ══════════════ ACCOUNTS VIEW ══════════════ -->
+<div id="view-accounts" class="view">
+  <div class="toolbar">
+    <span style="font-weight:600">Accounts</span>
+    <span style="font-size:12px;color:var(--mu)">— Create and edit account attributes</span>
+  </div>
+  <div class="accounts-shell">
+    <section class="accounts-panel">
+      <div class="section-header">
+        <i class="bi bi-wallet2" style="color:var(--ac)"></i>
+        Existing Accounts
+        <span class="section-sum" id="accounts-count"></span>
+      </div>
+      <div class="scroll-content">
+        <table class="txn-table accounts-table">
+          <thead><tr>
+            <th style="width:90px">ID</th>
+            <th>Name</th>
+            <th style="width:150px">Type</th>
+            <th style="width:140px">Created</th>
+            <th style="width:130px"></th>
+          </tr></thead>
+          <tbody id="accounts-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="accounts-panel accounts-form-panel">
+      <div class="section-header">
+        <i class="bi bi-pencil-square" style="color:var(--am)"></i>
+        Edit Account
+      </div>
+      <div class="accounts-form">
+        <input type="hidden" id="account-form-id">
+        <label>Name</label>
+        <input class="filter-input account-form-input" id="account-form-name" type="text" placeholder="Checking">
+        <label>Type</label>
+        <select class="filter-input account-form-input" id="account-form-type">
+          <option value="checking">Checking</option>
+          <option value="savings">Savings</option>
+          <option value="credit">Credit Card</option>
+          <option value="loan">Loan</option>
+        </select>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button type="button" class="btn-ac btn-sm" onclick="saveAccountForm()">Save Account</button>
+          <button type="button" class="btn-ol btn-sm" onclick="resetAccountForm()">New Account</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div><!-- /accounts -->
 
 <!-- ── Init modal ── -->
 <div class="modal-bg" id="init-modal">

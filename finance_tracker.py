@@ -879,6 +879,74 @@ def list_accounts():
     return jsonify([D(r) for r in rows])
 
 
+@app.route("/api/accounts", methods=["POST"])
+@require_auth
+def create_account():
+    d = request.get_json() or {}
+    name = d.get("name", "").strip()
+    acc_type = d.get("type", "checking").strip() or "checking"
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    c = get_user_db()
+    try:
+        cur = c.execute("INSERT INTO accounts(name,type) VALUES(?,?)", (name, acc_type))
+        c.commit()
+    except sqlite3.IntegrityError:
+        c.close()
+        return jsonify({"error": "account name already exists"}), 400
+    row = c.execute("SELECT id,name,type,created_at FROM accounts WHERE id=?", (cur.lastrowid,)).fetchone()
+    c.close()
+    return jsonify(D(row)), 201
+
+
+@app.route("/api/accounts/<int:aid>", methods=["PUT"])
+@require_auth
+def update_account(aid):
+    d = request.get_json() or {}
+    fields, vals = [], []
+    if "name" in d:
+        name = d.get("name", "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        fields.append("name=?")
+        vals.append(name)
+    if "type" in d:
+        fields.append("type=?")
+        vals.append((d.get("type") or "checking").strip() or "checking")
+    if not fields:
+        return jsonify({"error": "no fields"}), 400
+    vals.append(aid)
+    c = get_user_db()
+    try:
+        c.execute(f"UPDATE accounts SET {','.join(fields)} WHERE id=?", vals)
+        c.commit()
+    except sqlite3.IntegrityError:
+        c.close()
+        return jsonify({"error": "account name already exists"}), 400
+    row = c.execute("SELECT id,name,type,created_at FROM accounts WHERE id=?", (aid,)).fetchone()
+    c.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(D(row))
+
+
+@app.route("/api/accounts/<int:aid>", methods=["DELETE"])
+@require_auth
+def delete_account(aid):
+    c = get_user_db()
+    if aid == default_account_id(c):
+        c.close()
+        return jsonify({"error": "cannot delete default account"}), 400
+    ref = c.execute("SELECT COUNT(*) AS n FROM transactions WHERE account_id=? OR transfer_account_id=?", (aid, aid)).fetchone()
+    if ref and ref["n"]:
+        c.close()
+        return jsonify({"error": "account is in use"}), 400
+    c.execute("DELETE FROM accounts WHERE id=?", (aid,))
+    c.commit()
+    c.close()
+    return jsonify({"deleted": aid})
+
+
 # ──────────────────────────── Autocomplete API ───────────────────────────────
 
 @app.route("/api/categories")
