@@ -791,6 +791,7 @@ function setSort(bodyId, col){
   // Re-render relevant section
   if(bodyId==='income-body') renderSection('income-body',transactions.filter(t=>t.entry_type==='credit'));
   else if(bodyId==='expense-body') renderSection('expense-body',transactions.filter(t=>t.entry_type==='debit'));
+  else if(bodyId==='transfer-body') renderTransactions();
   else if(bodyId==='tmpl-income-body') renderTmplSection('tmpl-income-body',templates.filter(t=>t.entry_type==='credit'));
   else if(bodyId==='tmpl-expense-body') renderTmplSection('tmpl-expense-body',templates.filter(t=>t.entry_type==='debit'));
   else if(bodyId==='all-body') renderAllTransactions();
@@ -944,7 +945,7 @@ function renderBalanceSummary(bals){
 async function loadMonth(month){
   currentMonth=month;
   // Reset sort state for transaction tables on every month load
-  resetSortState(['income-body','expense-body'],'date');
+  resetSortState(['income-body','expense-body','transfer-body'],'date');
   buildCarousel();
   const scoped=accountScopeQuery();
   const[mData,txns,bals]=await Promise.all([
@@ -1651,7 +1652,9 @@ function makeEC(txn, field, type, extraClass, section){
       acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
+      if(txn.transfer_account_id) el.dataset.transferAccountId=String(txn.transfer_account_id);
+      el.addEventListener('input', ()=>{ delete el.dataset.transferAccountId; });
+      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; setTemplatePayeeSelection(el,opt); }, makeOnTab);
     }else if(field==='entry_type'){
       el=document.createElement('select'); el.className='cell-select';
       ['credit','debit'].forEach(v=>{
@@ -1681,9 +1684,18 @@ function makeEC(txn, field, type, extraClass, section){
         v=`${currentMonth}-${String(day).padStart(2,'0')}`;
       }
       const latest=getTxnById(txn.id) || txn;
+      if(field==='payee'){
+        const transferAccountId=el.dataset.transferAccountId?parseInt(el.dataset.transferAccountId,10):null;
+        const payeeChanged=!valuesEqual('payee',latest.payee,v);
+        const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
+        if(!payeeChanged&&!transferChanged) return false;
+        if(v) addPayee(v);
+        if(payeeChanged) updateField(txn.id,'payee',v);
+        if(transferChanged) updateField(txn.id,'transfer_account_id',transferAccountId);
+        return true;
+      }
       if(valuesEqual(field, latest[field], v)) return false;
       if(field==='category'&&v) addCat(v);
-      if(field==='payee'&&v) addPayee(v);
       updateField(txn.id,field,v);
       return true;
     };
@@ -1875,6 +1887,10 @@ function updateSums(){
   const incTotal=s(inc), expTotal=s(exp);
   document.getElementById('income-sum').textContent=fmt(incTotal);
   document.getElementById('expense-sum').textContent=fmt(-expTotal);
+  const txferRows=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>t.transfer_group_id);
+  const txferTotal=txferRows.reduce((acc,t)=>acc+parseFloat(t.amount||0),0);
+  const tSumEl=document.getElementById('transfer-sum');
+  if(tSumEl) tSumEl.textContent=txferTotal?fmt(txferTotal):'';
   // Net row in balance summary — broken out by status, filtered to visible accounts
   const sa=t=>t.entry_type==='credit'?t.amount:-t.amount;
   const visibleNet=getVisibleTransactions(collapseTransferRows(transactions));
@@ -1886,9 +1902,13 @@ function updateSums(){
 }
 function renderTransactions(){
   syncAccountColumns();
+  const multiAccount=showAccountColumns();
   const visible=getVisibleTransactions(collapseTransferRows(transactions));
-  renderSection('income-body',  visible.filter(t=>t.entry_type==='credit'));
-  renderSection('expense-body', visible.filter(t=>t.entry_type==='debit'));
+  const txfers=multiAccount?visible.filter(t=>t.transfer_group_id):[];
+  const nonTxfers=multiAccount?visible.filter(t=>!t.transfer_group_id):visible;
+  renderSection('income-body',   nonTxfers.filter(t=>t.entry_type==='credit'));
+  renderSection('expense-body',  nonTxfers.filter(t=>t.entry_type==='debit'));
+  renderSection('transfer-body', txfers);
   updateSums();
 }
 function renderSection(bodyId, rows){
@@ -2543,7 +2563,9 @@ function makeAllEC(txn,field,type,extraClass,section){
         return;
       }
       el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
-      acBind(el,()=>getPayeeAutocompleteOptions(),opt=>{el.value=opt?.label||opt||'';},makeOnTab);
+      if(txn.transfer_account_id) el.dataset.transferAccountId=String(txn.transfer_account_id);
+      el.addEventListener('input', ()=>{ delete el.dataset.transferAccountId; });
+      acBind(el,()=>getPayeeAutocompleteOptions(),opt=>{el.value=opt?.label||opt||'';setTemplatePayeeSelection(el,opt);},makeOnTab);
     }else if(field==='entry_type'){
       el=document.createElement('select');el.className='cell-select';
       ['credit','debit'].forEach(v=>{
@@ -2565,9 +2587,18 @@ function makeAllEC(txn,field,type,extraClass,section){
       let v=field==='amount'?parseFloat(el.value)||0:el.value;
       // Date is already YYYY-MM-DD — no reconstruction needed
       const latest=getAllTxnById(txn.id)||txn;
+      if(field==='payee'){
+        const transferAccountId=el.dataset.transferAccountId?parseInt(el.dataset.transferAccountId,10):null;
+        const payeeChanged=!valuesEqual('payee',latest.payee,v);
+        const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
+        if(!payeeChanged&&!transferChanged) return false;
+        if(v) addPayee(v);
+        if(payeeChanged) updateAllField(txn.id,'payee',v);
+        if(transferChanged) updateAllField(txn.id,'transfer_account_id',transferAccountId);
+        return true;
+      }
       if(valuesEqual(field,latest[field],v)) return false;
       if(field==='category'&&v) addCat(v);
-      if(field==='payee'&&v) addPayee(v);
       updateAllField(txn.id,field,v);
       return true;
     };
@@ -2975,13 +3006,17 @@ async function commitGhostMonthly(entryType){
   const dayRaw = parseInt(document.getElementById(`${p}-date`).value,10)||0;
   const day = dayRaw>0 ? Math.min(dayRaw,lastDay) : 1;
   const fullDate = `${currentMonth}-${String(day).padStart(2,'0')}`;
-  const payee    = document.getElementById(`${p}-payee`).value.trim();
+  const payeeEl  = document.getElementById(`${p}-payee`);
+  const payee    = payeeEl.value.trim();
   const category = document.getElementById(`${p}-cat`).value.trim();
   const amount   = parseFloat(document.getElementById(`${p}-amount`).value)||0;
   const notes    = document.getElementById(`${p}-notes`).value.trim();
   const accountId = getMonthlyGhostAccountId(p);
-  const transferAccount = findAccountByName(payee);
-  const transferAccountId = transferAccount && String(transferAccount.id) !== String(accountId) ? transferAccount.id : null;
+  const storedTId = payeeEl?.dataset.transferAccountId;
+  const transferAccount = storedTId ? null : findAccountByName(payee);
+  const transferAccountId = storedTId
+    ? (String(storedTId)!==String(accountId) ? parseInt(storedTId,10) : null)
+    : (transferAccount && String(transferAccount.id)!==String(accountId) ? transferAccount.id : null);
   const body = {date:fullDate,payee,category,amount,entry_type:entryType,
                 status:'estimated',is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
                 account_id:accountId || undefined,
@@ -3041,7 +3076,7 @@ function initGhostRows(){
     const catEl  =document.getElementById(`${pfx}-cat`);
     if(payeeEl){
       payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; });
-      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; },null);
+      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; setTemplatePayeeSelection(payeeEl,opt); },null);
     }
     if(catEl)   acBind(catEl,  ()=>[...categories].sort(),opt=>{ catEl.value=opt?.label||opt||''; },null);
     inputIds.forEach((id, i)=>{
@@ -3078,7 +3113,10 @@ function initGhostRows(){
   // All-transactions ghost row
   const giaPayee=document.getElementById('gia-payee');
   const giaCat  =document.getElementById('gia-cat');
-  if(giaPayee) acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; },null);
+  if(giaPayee){
+    giaPayee.addEventListener('input', ()=>{ delete giaPayee.dataset.transferAccountId; });
+    acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; setTemplatePayeeSelection(giaPayee,opt); },null);
+  }
   if(giaCat)   acBind(giaCat,  ()=>[...categories].sort(),opt=>{ giaCat.value=opt?.label||opt||''; },null);
   const giaIds=['gia-date','gia-payee','gia-cat','gia-amount','gia-notes'];
   giaIds.forEach((id, i)=>{
@@ -3109,7 +3147,7 @@ function initGhostRows(){
   currentMonth=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
   buildJumpPicker();
   // Initialize default sort states
-  resetSortState(['income-body','expense-body'],'date');
+  resetSortState(['income-body','expense-body','transfer-body'],'date');
   resetSortState(['tmpl-income-body','tmpl-expense-body'],'day_of_month');
   const[cats,counts,tmpls,payeeList,pd]=await Promise.all([
     fetch('/api/categories').then(r=>r.json()).catch(()=>[]),
