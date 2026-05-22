@@ -10,3 +10,4 @@ Source Data
 __pycache__/
 .mypy_cache/
 secret.key
+scripts

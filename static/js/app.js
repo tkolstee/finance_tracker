@@ -8,7 +8,7 @@ let chartVisible  = true;
 let payeeDefaults = {};
 let accounts      = [];
 let accountsById  = {};
-let selectedAccountIds = new Set();
+let selectedAccountIds = null; // null = all accounts; empty Set = none selected
 // Payees view state
 const PAYEE_COLORS = [
   '#4f7ef8','#22c55e','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#fb7185','#f97316',
@@ -249,31 +249,32 @@ function getAccountName(id){
 
 function getSelectedAccountIds(){
   if(!accounts.length) return [];
-  if(!selectedAccountIds.size) return accounts.map(a=>String(a.id));
+  if(selectedAccountIds === null) return accounts.map(a=>String(a.id));
   return [...selectedAccountIds].filter(id=>accounts.some(acc=>String(acc.id)===String(id)));
 }
 
 function isAllAccountsSelected(){
+  if(selectedAccountIds === null) return true;
   const ids = getSelectedAccountIds();
   return ids.length === accounts.length && accounts.length > 0;
 }
 
 function hasSelectedAccount(accountId){
-  if(isAllAccountsSelected()) return true;
-  const selected = String(accountId);
-  return selectedAccountIds.has(selected);
+  if(selectedAccountIds === null) return true;
+  if(selectedAccountIds.size === 0) return false;
+  return selectedAccountIds.has(String(accountId));
 }
 
 function normalizeSelectedAccounts(nextIds){
+  if(nextIds === null) return null;
   const ids = [...new Set((nextIds || []).map(id=>String(id)).filter(Boolean))]
     .filter(id=>accounts.some(acc=>String(acc.id)===String(id)));
-  if(!ids.length) return new Set(accounts.map(a=>String(a.id)));
-  return new Set(ids);
+  return new Set(ids); // empty Set = none selected
 }
 
 function getSelectedAccountSummary(){
+  if(selectedAccountIds !== null && selectedAccountIds.size === 0) return 'No Accounts';
   const ids = getSelectedAccountIds();
-  if(!ids.length) return 'All Accounts';
   if(ids.length === accounts.length) return 'All Accounts';
   if(ids.length === 1) return getAccountName(ids[0]);
   return `${ids.length} Accounts`;
@@ -288,10 +289,9 @@ function syncAccountColumns(){
 }
 
 function isSelectedAccount(txn){
-  const ids = getSelectedAccountIds();
-  if(ids.length === accounts.length) return true;
-  const selected = new Set(ids.map(String));
-  return selected.has(String(txn?.account_id ?? '')) || selected.has(String(txn?.transfer_account_id ?? ''));
+  if(selectedAccountIds === null) return true;
+  if(selectedAccountIds.size === 0) return false;
+  return selectedAccountIds.has(String(txn?.account_id ?? '')) || selectedAccountIds.has(String(txn?.transfer_account_id ?? ''));
 }
 
 function getVisibleTransactions(rows){
@@ -299,6 +299,7 @@ function getVisibleTransactions(rows){
 }
 
 function accountScopeQuery(){
+  if(selectedAccountIds !== null && selectedAccountIds.size === 0) return '?account_ids=0';
   const ids = getSelectedAccountIds();
   if(!ids.length || ids.length === accounts.length) return '';
   return `?account_ids=${encodeURIComponent(ids.join(','))}`;
@@ -315,8 +316,9 @@ function refreshAccountSelector(){
 }
 
 function setSelectedAccount(accountId){
-  selectedAccountIds = normalizeSelectedAccounts(accountId == null ? [] : [accountId]);
-  localStorage.setItem('ft-selected-accounts', [...selectedAccountIds].join(','));
+  selectedAccountIds = normalizeSelectedAccounts(accountId == null ? null : [accountId]);
+  const saved = selectedAccountIds === null ? '__all__' : [...selectedAccountIds].join(',');
+  localStorage.setItem('ft-selected-accounts', saved);
   refreshAccountSelector();
   if(transactions.length) computePayeeBadges();
   if(allTransactions.length) computeAllPayeeBadges();
@@ -358,7 +360,7 @@ function renderAccountSelectorPanel(){
   const clearBtn = document.createElement('button');
   clearBtn.type = 'button';
   clearBtn.className = 'btn-ol btn-sm';
-  clearBtn.textContent = 'Reset';
+  clearBtn.textContent = 'None';
   clearBtn.onclick = ()=>setSelectedAccounts([]);
   actions.appendChild(allBtn);
   actions.appendChild(clearBtn);
@@ -403,7 +405,9 @@ document.addEventListener('click', ev=>{
 });
 
 function toggleAccountSelection(accountId, checked){
-  const next = new Set(selectedAccountIds);
+  const next = selectedAccountIds === null
+    ? new Set(accounts.map(a=>String(a.id)))
+    : new Set(selectedAccountIds);
   if(checked) next.add(String(accountId));
   else next.delete(String(accountId));
   setSelectedAccounts([...next]);
@@ -411,7 +415,8 @@ function toggleAccountSelection(accountId, checked){
 
 function setSelectedAccounts(accountIds){
   selectedAccountIds = normalizeSelectedAccounts(accountIds);
-  localStorage.setItem('ft-selected-accounts', [...selectedAccountIds].join(','));
+  const saved = selectedAccountIds === null ? '__all__' : selectedAccountIds.size === 0 ? '__none__' : [...selectedAccountIds].join(',');
+  localStorage.setItem('ft-selected-accounts', saved);
   refreshAccountSelector();
   if(transactions.length) computePayeeBadges();
   if(allTransactions.length) computeAllPayeeBadges();
@@ -486,10 +491,11 @@ async function deleteAccount(id){
   await readJsonResponse(await resilientApiFetch(`/api/accounts/${id}`, {method:'DELETE'}));
   await loadAccounts();
   renderAccountsView();
-  if(selectedAccountIds.has(String(id))){
-    selectedAccountIds.delete(String(id));
-    if(!selectedAccountIds.size) selectedAccountIds = normalizeSelectedAccounts([]);
-    localStorage.setItem('ft-selected-accounts', [...selectedAccountIds].join(','));
+  if(selectedAccountIds === null || selectedAccountIds.has(String(id))){
+    if(selectedAccountIds !== null) selectedAccountIds.delete(String(id));
+    if(selectedAccountIds !== null && !selectedAccountIds.size) selectedAccountIds = null;
+    const saved = selectedAccountIds === null ? '__all__' : [...selectedAccountIds].join(',');
+    localStorage.setItem('ft-selected-accounts', saved);
     refreshAccountSelector();
     renderTransactions();
     renderAllTransactions();
@@ -769,6 +775,7 @@ function sortRows(rows, bodyId, defaultCol){
   return [...rows].sort((a,b)=>{
     let av=a[ss.col]??'', bv=b[ss.col]??'';
     if(ss.col==='amount'||ss.col==='day_of_month'){av=parseFloat(av)||0;bv=parseFloat(bv)||0;}
+    if(ss.col==='status'){const o={estimated:0,actual:1,reconciled:2};av=o[av]??0;bv=o[bv]??0;}
     const cmp=av<bv?-1:av>bv?1:0;
     if(cmp!==0) return cmp*ss.dir;
     // secondary: payee alphabetical
@@ -1868,11 +1875,12 @@ function updateSums(){
   const incTotal=s(inc), expTotal=s(exp);
   document.getElementById('income-sum').textContent=fmt(incTotal);
   document.getElementById('expense-sum').textContent=fmt(-expTotal);
-  // Net row in balance summary — broken out by status
+  // Net row in balance summary — broken out by status, filtered to visible accounts
   const sa=t=>t.entry_type==='credit'?t.amount:-t.amount;
-  const netEst=transactions.reduce((acc,t)=>acc+sa(t),0);
-  const netAct=transactions.filter(t=>['actual','reconciled'].includes(t.status)).reduce((acc,t)=>acc+sa(t),0);
-  const netRec=transactions.filter(t=>t.status==='reconciled').reduce((acc,t)=>acc+sa(t),0);
+  const visibleNet=getVisibleTransactions(collapseTransferRows(transactions));
+  const netEst=visibleNet.reduce((acc,t)=>acc+sa(t),0);
+  const netAct=visibleNet.filter(t=>['actual','reconciled'].includes(t.status)).reduce((acc,t)=>acc+sa(t),0);
+  const netRec=visibleNet.filter(t=>t.status==='reconciled').reduce((acc,t)=>acc+sa(t),0);
   [['bs-net-est',netEst],['bs-net-act',netAct],['bs-net-rec',netRec]]
     .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
 }
@@ -2913,8 +2921,14 @@ async function loadAccounts(){
   accountsById={};
   accounts.forEach(a=>{ accountsById[String(a.id)] = a; });
   const saved = localStorage.getItem('ft-selected-accounts') || '';
-  const savedIds = saved ? saved.split(',').map(s=>s.trim()).filter(Boolean) : [];
-  selectedAccountIds = normalizeSelectedAccounts(savedIds);
+  if(saved === '__none__'){
+    selectedAccountIds = new Set();
+  } else if(saved === '__all__' || saved === ''){
+    selectedAccountIds = null;
+  } else {
+    const savedIds = saved.split(',').map(s=>s.trim()).filter(Boolean);
+    selectedAccountIds = normalizeSelectedAccounts(savedIds);
+  }
   refreshAccountSelector();
   renderAccountsView();
   refreshAccountNameDependentViews();
