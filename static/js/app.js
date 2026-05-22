@@ -218,6 +218,8 @@ function findAccountByName(name){
 }
 
 function syncMonthlyGhostAccountSelectors(){
+  const visibleIds = new Set(getSelectedAccountIds().map(String));
+  const allVisible = visibleIds.size === accounts.length;
   const defaultId = getSelectedAccountIds()[0] || String(accounts[0]?.id || '');
   ['gi-inc-account','gi-exp-account'].forEach(id=>{
     const sel = document.getElementById(id);
@@ -228,9 +230,10 @@ function syncMonthlyGhostAccountSelectors(){
       const opt = document.createElement('option');
       opt.value = String(acc.id);
       opt.textContent = acc.name || `Account ${acc.id}`;
+      if(!allVisible && !visibleIds.has(String(acc.id))) opt.disabled = true;
       sel.appendChild(opt);
     });
-    const nextValue = accounts.some(acc=>String(acc.id) === String(previous)) ? previous : defaultId;
+    const nextValue = accounts.some(acc=>String(acc.id) === String(previous) && (allVisible || visibleIds.has(String(acc.id)))) ? previous : defaultId;
     if(nextValue) sel.value = String(nextValue);
   });
 }
@@ -789,9 +792,7 @@ function setSort(bodyId, col){
   else sortState[bodyId]={col,dir:1};
   refreshSortIcons(bodyId);
   // Re-render relevant section
-  if(bodyId==='income-body') renderSection('income-body',transactions.filter(t=>t.entry_type==='credit'));
-  else if(bodyId==='expense-body') renderSection('expense-body',transactions.filter(t=>t.entry_type==='debit'));
-  else if(bodyId==='transfer-body') renderTransactions();
+  if(bodyId==='income-body'||bodyId==='expense-body'||bodyId==='transfer-body') renderTransactions();
   else if(bodyId==='tmpl-income-body') renderTmplSection('tmpl-income-body',templates.filter(t=>t.entry_type==='credit'));
   else if(bodyId==='tmpl-expense-body') renderTmplSection('tmpl-expense-body',templates.filter(t=>t.entry_type==='debit'));
   else if(bodyId==='all-body') renderAllTransactions();
@@ -1605,6 +1606,8 @@ function makeEC(txn, field, type, extraClass, section){
       span.textContent=txn.entry_type==='credit'?'Income':'Expense';
     }else if(field==='date'){
       span.textContent=txn.date?String(parseInt(txn.date.slice(8),10)):'';
+    }else if(field==='account_id'){
+      span.textContent=getAccountName(txn.account_id);
     }else{ span.textContent=txn[field]||''; }
   }
   td.appendChild(span);
@@ -1627,6 +1630,8 @@ function makeEC(txn, field, type, extraClass, section){
         span.textContent=latest.entry_type==='credit'?'Income':'Expense';
       }else if(field==='date'){
         span.textContent=latest.date?String(parseInt(latest.date.slice(8),10)):'';
+      }else if(field==='account_id'){
+        span.textContent=getAccountName(latest.account_id);
       }else{
         span.textContent=latest[field]||'';
       }
@@ -1647,7 +1652,16 @@ function makeEC(txn, field, type, extraClass, section){
       if(t && t.type!=='ghost') setTimeout(()=>applyTxnTarget(t),80);
     };
 
-    if(field==='category'){
+    if(field==='account_id'){
+      el=document.createElement('select'); el.className='cell-select';
+      accounts.forEach(acc=>{
+        const opt=document.createElement('option');
+        opt.value=String(acc.id);
+        opt.textContent=acc.name||`Account ${acc.id}`;
+        if(String(acc.id)===String(txn.account_id)) opt.selected=true;
+        el.appendChild(opt);
+      });
+    }else if(field==='category'){
       el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
       acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
@@ -1676,7 +1690,7 @@ function makeEC(txn, field, type, extraClass, section){
     if(el.tagName==='INPUT'){try{el.select()}catch(x){}}
 
     const doSave=()=>{
-      let v=field==='amount'?parseFloat(el.value)||0:el.value;
+      let v=field==='amount'?parseFloat(el.value)||0:field==='account_id'?parseInt(el.value,10)||txn.account_id:el.value;
       if(field==='date'&&v){
         const [yr,mo]=currentMonth.split('-');
         const lastDay=new Date(+yr,+mo,0).getDate();
@@ -1917,7 +1931,7 @@ function renderSection(bodyId, rows){
   const tbody=document.getElementById(bodyId); tbody.innerHTML='';
   sorted.forEach(txn=>{
     const tr=document.createElement('tr'); tr.className='txn-row'; tr.dataset.id=txn.id;
-    if(showAccountColumns()) tr.appendChild(makeAccountCell(txn, 'w-ac'));
+    tr.appendChild(makeEC(txn,'account_id',null,'w-ac account-col'));
     tr.appendChild(makeEC(txn,'date',   'date',   'w-dt'));
     tr.appendChild(makeEC(txn,'payee',  'text',   'w-py', sorted));
     tr.appendChild(makeEC(txn,'category','text',  'w-ca'));
