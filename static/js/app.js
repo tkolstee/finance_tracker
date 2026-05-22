@@ -849,6 +849,7 @@ function showView(v){
   document.getElementById('tab-all').classList.toggle('active', v==='all');
   document.getElementById('tab-payees')?.classList.toggle('active', v==='payees');
   document.getElementById('tab-accounts')?.classList.toggle('active', v==='accounts');
+  if(v==='monthly') renderTransactions();
   if(v==='template') loadTemplates();
   if(v==='all') loadAllTransactions();
   if(v==='payees') loadPayeesView();
@@ -2055,6 +2056,8 @@ async function loadPayeesView(){
   payeesMap={};
   data.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
   updateDL();
+  renderTransactions();
+  renderTemplates();
   renderPayeesAdmin();
 }
 
