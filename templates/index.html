@@ -495,44 +495,56 @@
 
 <div class="toast-area" id="ta"></div>
 
-<!-- Payees view (full page) -->
+<!-- Payees admin view -->
 <div id="view-payees" class="view">
   <div class="toolbar">
     <span style="font-weight:600">Payees</span>
-    <span style="font-size:12px;color:var(--mu);margin-left:8px">— Select payees to display</span>
+    <span style="font-size:12px;color:var(--mu)">— Manage payee names and their associated categories</span>
   </div>
-  <div class="payees-content">
-    <aside class="payees-sidebar">
-      <div style="padding:10px 12px">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <label style="font-size:12px">From</label>
-          <input class="filter-input" type="month" id="payees-from" onchange="renderPayeesView()">
-          <label style="font-size:12px">To</label>
-          <input class="filter-input" type="month" id="payees-to" onchange="renderPayeesView()">
-          <button class="btn-ol btn-sm" type="button" onclick="resetPayeesDateRange()">Reset</button>
+  <div class="accounts-shell">
+    <section class="accounts-panel">
+      <div class="section-header">
+        <i class="bi bi-person-lines-fill" style="color:var(--ac)"></i>
+        Payees
+        <span class="section-sum" id="payees-count"></span>
+      </div>
+      <div class="scroll-content">
+        <table class="txn-table accounts-table">
+          <thead><tr>
+            <th style="width:90px">ID</th>
+            <th>Name</th>
+            <th style="width:160px">Category</th>
+            <th style="width:160px">Subcategory</th>
+            <th style="width:130px"></th>
+          </tr></thead>
+          <tbody id="payees-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="accounts-panel accounts-form-panel">
+      <div class="section-header">
+        <i class="bi bi-pencil-square" style="color:var(--am)"></i>
+        Edit Payee
+      </div>
+      <div class="accounts-form">
+        <input type="hidden" id="payee-form-id">
+        <label>Name</label>
+        <input class="filter-input account-form-input" id="payee-form-name" type="text" placeholder="Payee name">
+        <label>Category</label>
+        <input class="filter-input account-form-input" id="payee-form-category" type="text" placeholder="Main category" list="cat-list" oninput="onPayeeCategoryInput()">
+        <label>Subcategory</label>
+        <input class="filter-input account-form-input" id="payee-form-subcategory" type="text" placeholder="Subcategory (optional)" list="subcat-list">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button type="button" class="btn-ac btn-sm" onclick="savePayeeForm()">Save Payee</button>
+          <button type="button" class="btn-ol btn-sm" onclick="resetPayeeForm()">New Payee</button>
         </div>
       </div>
-      <div class="payees-list" id="payees-list" style="padding:8px;"></div>
-    </aside>
-    <main class="payees-main">
-      <div class="chart-panel payees-chart-panel">
-        <canvas id="payees-bar-chart"></canvas>
-      </div>
-      <div style="padding:10px 14px;flex:1;overflow:auto">
-        <table class="txn-table"><thead><tr>
-          <th style="width:120px">Date</th>
-          <th style="width:80px">Type</th>
-          <th>Payee</th>
-          <th>Category</th>
-          <th style="text-align:right">Amount</th>
-          <th>Notes</th>
-        </tr></thead>
-        <tbody id="payees-body"></tbody></table>
-      </div>
-    </main>
+    </section>
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees5"></script>
+<datalist id="cat-list"></datalist>
+<datalist id="subcat-list"></datalist>
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees6"></script>
 </body>
 </html>

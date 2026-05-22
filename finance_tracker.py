@@ -608,10 +608,68 @@ def add_txn(month):
 @require_auth
 def update_txn(tid):
     d = request.get_json()
+    c = get_user_db()
+    txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
+    if not txn:
+        c.close()
+        return jsonify({"error": "not found"}), 404
+
+    # Handle transfer_account_id changes (plain↔transfer conversion)
+    if "transfer_account_id" in d:
+        new_tai = int(d["transfer_account_id"]) if d["transfer_account_id"] else None
+        old_tai = txn["transfer_account_id"]
+        old_tgid = txn["transfer_group_id"]
+
+        if old_tgid:
+            # Already a transfer
+            peer = c.execute(
+                "SELECT * FROM transactions WHERE transfer_group_id=? AND id<>? LIMIT 1",
+                (old_tgid, tid)
+            ).fetchone()
+            if new_tai:
+                # Change destination account: update both legs
+                c.execute("UPDATE transactions SET transfer_account_id=? WHERE id=?", (new_tai, tid))
+                if peer:
+                    c.execute(
+                        "UPDATE transactions SET account_id=?, transfer_account_id=? WHERE id=?",
+                        (new_tai, txn["account_id"], peer["id"])
+                    )
+            else:
+                # Convert transfer to plain: delete paired leg, clear transfer fields
+                if peer:
+                    c.execute("DELETE FROM transactions WHERE id=?", (peer["id"],))
+                c.execute(
+                    "UPDATE transactions SET transfer_group_id=NULL, transfer_role='normal', transfer_account_id=NULL WHERE id=?",
+                    (tid,)
+                )
+        elif new_tai and not old_tgid:
+            # Convert plain to transfer: create paired leg
+            new_tgid = uuid.uuid4().hex
+            entry_type = txn["entry_type"]
+            new_payee = d.get("payee", txn["payee"])
+            c.execute(
+                "UPDATE transactions SET transfer_group_id=?, transfer_role='source', transfer_account_id=?, payee=? WHERE id=?",
+                (new_tgid, new_tai, new_payee, tid)
+            )
+            insert_txn_row(
+                c, month=txn["month"], date=txn["date"], payee=new_payee,
+                category=txn["category"], amount=txn["amount"],
+                entry_type=opposite_entry_type(entry_type),
+                status=txn["status"], recurs_monthly=txn["recurs_monthly"],
+                is_automatic=txn["is_automatic"], is_adhoc=txn["is_adhoc"],
+                notes=txn["notes"], sort_order=txn["sort_order"],
+                account_id=new_tai, transfer_group_id=new_tgid,
+                transfer_role="destination", transfer_account_id=txn["account_id"],
+            )
+
+    # Update standard fields
     fields, vals = [], []
     for f in ["date", "payee", "category", "amount", "entry_type", "status",
               "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order"]:
         if f not in d:
+            continue
+        # Don't allow payee changes on transfers (display derives from transfer_account_id)
+        if f == "payee" and txn["transfer_group_id"]:
             continue
         fields.append(f"{f}=?")
         v = d[f]
@@ -620,24 +678,20 @@ def update_txn(tid):
         elif f in ("recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
             v = int(v)
         vals.append(v)
-    if not fields:
-        return jsonify({"error": "no fields"}), 400
-    vals.append(tid)
-    c = get_user_db()
-    txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
-    if not txn:
-        c.close()
-        return jsonify({"error": "not found"}), 404
-    if txn["transfer_group_id"] and "payee" in d:
-        c.close()
-        return jsonify({"error": "transfer payee is derived from the destination account"}), 400
-    c.execute(f"UPDATE transactions SET {','.join(fields)} WHERE id=?", vals)
-    if txn["transfer_group_id"]:
-        transfer_fields = {}
-        for f in ["date", "category", "amount", "entry_type", "status", "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order", "transfer_account_id"]:
-            if f in d:
-                transfer_fields[f] = d[f]
-        update_transfer_pair(c, txn, transfer_fields)
+
+    if fields:
+        vals.append(tid)
+        c.execute(f"UPDATE transactions SET {','.join(fields)} WHERE id=?", vals)
+        # Re-fetch txn to get updated state for transfer pair sync
+        txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
+        if txn and txn["transfer_group_id"]:
+            transfer_fields = {}
+            for f in ["date", "category", "amount", "entry_type", "status",
+                      "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order"]:
+                if f in d:
+                    transfer_fields[f] = d[f]
+            update_transfer_pair(c, txn, transfer_fields)
+
     c.commit()
     return jsonify(D(fetch_txn(c, tid)))
 
@@ -1063,27 +1117,67 @@ def list_categories():
 @require_auth
 def list_payees():
     c = get_user_db()
-    rows = c.execute("""SELECT DISTINCT payee FROM (
-        SELECT payee FROM transactions WHERE payee!=''
-        UNION SELECT payee FROM templates WHERE payee!='') ORDER BY payee""").fetchall()
+    rows = c.execute("SELECT id, name, category, subcategory FROM payees ORDER BY name").fetchall()
     c.close()
-    return jsonify([r["payee"] for r in rows])
+    return jsonify([D(r) for r in rows])
 
 
-@app.route("/api/payee-defaults")
+@app.route("/api/payees", methods=["POST"])
 @require_auth
-def payee_defaults():
+def create_payee():
+    d = request.get_json() or {}
+    name = (d.get("name") or "").strip()
+    category = (d.get("category") or "").strip()
+    subcategory = (d.get("subcategory") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
     c = get_user_db()
-    rows = c.execute(
-        "SELECT payee, category FROM transactions "
-        "WHERE payee!='' AND category!='' ORDER BY month DESC, created_at DESC"
-    ).fetchall()
+    try:
+        cur = c.execute("INSERT INTO payees(name, category, subcategory) VALUES(?, ?, ?)", (name, category, subcategory))
+        c.commit()
+    except Exception as e:
+        c.close()
+        return jsonify({"error": str(e)}), 400
+    row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (cur.lastrowid,)).fetchone()
     c.close()
-    defaults = {}
-    for r in rows:
-        if r["payee"] not in defaults:
-            defaults[r["payee"]] = r["category"]
-    return jsonify(defaults)
+    return jsonify(D(row)), 201
+
+
+@app.route("/api/payees/<int:pid>", methods=["PUT"])
+@require_auth
+def update_payee(pid):
+    d = request.get_json() or {}
+    c = get_user_db()
+    old = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
+    if not old:
+        c.close()
+        return jsonify({"error": "not found"}), 404
+    old_name = old["name"]
+    new_name = d.get("name", old_name).strip() or old_name
+    new_category = d.get("category", old["category"]) or ""
+    new_subcategory = (d.get("subcategory", old["subcategory"]) or "").strip()
+    try:
+        c.execute("UPDATE payees SET name=?, category=?, subcategory=? WHERE id=?", (new_name, new_category, new_subcategory, pid))
+        if new_name != old_name:
+            c.execute("UPDATE transactions SET payee=? WHERE payee=?", (new_name, old_name))
+            c.execute("UPDATE templates SET payee=? WHERE payee=?", (new_name, old_name))
+        c.commit()
+    except Exception as e:
+        c.close()
+        return jsonify({"error": str(e)}), 400
+    row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
+    c.close()
+    return jsonify(D(row))
+
+
+@app.route("/api/payees/<int:pid>", methods=["DELETE"])
+@require_auth
+def delete_payee(pid):
+    c = get_user_db()
+    c.execute("DELETE FROM payees WHERE id=?", (pid,))
+    c.commit()
+    c.close()
+    return jsonify({"deleted": pid})
 
 
 # ──────────────────────────── Frontend ───────────────────────────────────────

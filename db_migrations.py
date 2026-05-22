@@ -1,6 +1,6 @@
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 
 def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -105,12 +105,67 @@ def migrate_5_add_template_transfer_account_id(connection: sqlite3.Connection) -
         connection.execute("ALTER TABLE templates ADD COLUMN transfer_account_id INTEGER")
 
 
+def migrate_6_add_payees_table(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS payees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
+    acct_rows = connection.execute("SELECT name FROM accounts").fetchall()
+    account_names_lower = {r["name"].lower() for r in acct_rows}
+
+    # Most prevalent category per payee: group by (payee, category) ordered by count desc,
+    # then pick the first row seen per payee (highest count).
+    rows = connection.execute(
+        "SELECT payee, COALESCE(category,'') AS category, COUNT(*) AS cnt "
+        "FROM transactions "
+        "WHERE payee IS NOT NULL AND payee != '' "
+        "GROUP BY payee, category "
+        "ORDER BY payee ASC, cnt DESC"
+    ).fetchall()
+
+    payee_categories: dict = {}
+    for row in rows:
+        payee = row["payee"]
+        if payee not in payee_categories:
+            payee_categories[payee] = row["category"] or ""
+
+    # Also include payees that only appear in templates
+    tmpl_rows = connection.execute(
+        "SELECT DISTINCT payee, COALESCE(category,'') AS category FROM templates "
+        "WHERE payee IS NOT NULL AND payee != ''"
+    ).fetchall()
+    for row in tmpl_rows:
+        payee = row["payee"]
+        if payee not in payee_categories:
+            payee_categories[payee] = row["category"] or ""
+
+    for payee, category in payee_categories.items():
+        if payee.lower() not in account_names_lower:
+            connection.execute(
+                "INSERT OR IGNORE INTO payees(name, category) VALUES(?, ?)",
+                (payee, category)
+            )
+
+
+def migrate_7_add_payee_subcategory(connection: sqlite3.Connection) -> None:
+    if not _column_exists(connection, "payees", "subcategory"):
+        connection.execute(
+            "ALTER TABLE payees ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''"
+        )
+
+
 MIGRATIONS = (
     (1, migrate_1_create_core_schema),
     (2, migrate_2_add_month_balance_columns),
     (3, migrate_3_add_accounts_and_transfers),
     (4, migrate_4_add_template_account_id),
     (5, migrate_5_add_template_transfer_account_id),
+    (6, migrate_6_add_payees_table),
+    (7, migrate_7_add_payee_subcategory),
 )
 
 
