@@ -185,11 +185,22 @@ const MONS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','D
 let categories = new Set();
 let payees     = new Set();
 
-function updateDL() {
+function updateDL(){
   const dl=document.getElementById('cat-list'); if(!dl) return; dl.innerHTML='';
-  [...categories].sort().forEach(c=>{const o=document.createElement('option');o.value=c;dl.appendChild(o);});
+  [...new Set(payeesList.map(p=>p.category||'').filter(Boolean))].sort()
+    .forEach(c=>{const o=document.createElement('option');o.value=c;dl.appendChild(o);});
 }
-function addCat(c){ if(c&&!categories.has(c)){categories.add(c);updateDL();} }
+function updateSubcatDL(mainCat){
+  const dl=document.getElementById('subcat-list'); if(!dl) return; dl.innerHTML='';
+  [...new Set(payeesList.filter(p=>(p.category||'')===mainCat&&p.subcategory).map(p=>p.subcategory))].sort()
+    .forEach(s=>{const o=document.createElement('option');o.value=s;dl.appendChild(o);});
+}
+function onPayeeCategoryInput(){
+  const el=document.getElementById('payee-form-category'); if(!el) return;
+  updateSubcatDL(el.value.trim());
+}
+function fmtCat(p){ return p.subcategory?(p.category||'')+':'+p.subcategory:(p.category||''); }
+function addCat(c){ if(c&&!categories.has(c)){categories.add(c);} }
 function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 
 function getPayeeAutocompleteOptions(){
@@ -756,7 +767,8 @@ async function refreshSuggestions(){
   categories=new Set(cats.filter(Boolean));
   payeesList=pList;
   payeesMap={};
-  pList.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
+  pList.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
+  updateDL();
   templates.forEach(t=>{if(t.category)categories.add(t.category);if(t.payee)payees.add(t.payee);});
 }
 
@@ -2041,7 +2053,8 @@ async function loadPayeesView(){
   const data=await resilientApiFetch('/api/payees').then(r=>r.json()).catch(()=>[]);
   payeesList=data;
   payeesMap={};
-  data.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
+  data.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
+  updateDL();
   renderPayeesAdmin();
 }
 
@@ -2056,6 +2069,7 @@ function renderPayeesAdmin(){
     tr.innerHTML=`<td style="color:var(--mu);font-size:11px">${p.id}</td>
       <td>${escHtml(p.name)}</td>
       <td>${escHtml(p.category||'')}</td>
+      <td>${escHtml(p.subcategory||'')}</td>
       <td style="text-align:right">
         <button class="btn-ol btn-sm" onclick="editPayeeForm(${p.id})">Edit</button>
         <button class="del-btn" style="margin-left:4px" onclick="deletePayee(${p.id})" title="Delete"><i class="bi bi-x-lg"></i></button>
@@ -2071,6 +2085,8 @@ function editPayeeForm(id){
   document.getElementById('payee-form-id').value=id;
   document.getElementById('payee-form-name').value=p.name||'';
   document.getElementById('payee-form-category').value=p.category||'';
+  document.getElementById('payee-form-subcategory').value=p.subcategory||'';
+  updateSubcatDL(p.category||'');
   document.getElementById('payee-form-name').focus();
 }
 
@@ -2078,6 +2094,8 @@ function resetPayeeForm(){
   document.getElementById('payee-form-id').value='';
   document.getElementById('payee-form-name').value='';
   document.getElementById('payee-form-category').value='';
+  document.getElementById('payee-form-subcategory').value='';
+  updateSubcatDL('');
   document.getElementById('payee-form-name').focus();
 }
 
@@ -2085,14 +2103,15 @@ async function savePayeeForm(){
   const id=document.getElementById('payee-form-id').value;
   const name=(document.getElementById('payee-form-name').value||'').trim();
   const category=(document.getElementById('payee-form-category').value||'').trim();
+  const subcategory=(document.getElementById('payee-form-subcategory').value||'').trim();
   if(!name){ document.getElementById('payee-form-name').focus(); return; }
   try{
     if(id){
       await resilientApiFetch(`/api/payees/${id}`,
-        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category})}).then(r=>r.json());
+        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category,subcategory})}).then(r=>r.json());
     }else{
       await resilientApiFetch('/api/payees',
-        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category})}).then(r=>r.json());
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category,subcategory})}).then(r=>r.json());
     }
     await loadPayeesView();
     resetPayeeForm();
@@ -3076,7 +3095,8 @@ function initGhostRows(){
   cats.forEach(c=>c&&addCat(c));
   payeesList=payeeObjects;
   payeesMap={};
-  payeeObjects.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
+  payeeObjects.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
+  updateDL();
   monthCounts=counts;
   templates=tmpls;
   templates.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});

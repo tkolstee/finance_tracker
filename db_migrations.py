@@ -1,6 +1,6 @@
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -151,6 +151,13 @@ def migrate_6_add_payees_table(connection: sqlite3.Connection) -> None:
             )
 
 
+def migrate_7_add_payee_subcategory(connection: sqlite3.Connection) -> None:
+    if not _column_exists(connection, "payees", "subcategory"):
+        connection.execute(
+            "ALTER TABLE payees ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''"
+        )
+
+
 MIGRATIONS = (
     (1, migrate_1_create_core_schema),
     (2, migrate_2_add_month_balance_columns),
@@ -158,6 +165,7 @@ MIGRATIONS = (
     (4, migrate_4_add_template_account_id),
     (5, migrate_5_add_template_transfer_account_id),
     (6, migrate_6_add_payees_table),
+    (7, migrate_7_add_payee_subcategory),
 )
 
 

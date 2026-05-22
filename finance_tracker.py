@@ -1117,7 +1117,7 @@ def list_categories():
 @require_auth
 def list_payees():
     c = get_user_db()
-    rows = c.execute("SELECT id, name, category FROM payees ORDER BY name").fetchall()
+    rows = c.execute("SELECT id, name, category, subcategory FROM payees ORDER BY name").fetchall()
     c.close()
     return jsonify([D(r) for r in rows])
 
@@ -1128,16 +1128,17 @@ def create_payee():
     d = request.get_json() or {}
     name = (d.get("name") or "").strip()
     category = (d.get("category") or "").strip()
+    subcategory = (d.get("subcategory") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
     c = get_user_db()
     try:
-        cur = c.execute("INSERT INTO payees(name, category) VALUES(?, ?)", (name, category))
+        cur = c.execute("INSERT INTO payees(name, category, subcategory) VALUES(?, ?, ?)", (name, category, subcategory))
         c.commit()
     except Exception as e:
         c.close()
         return jsonify({"error": str(e)}), 400
-    row = c.execute("SELECT id, name, category FROM payees WHERE id=?", (cur.lastrowid,)).fetchone()
+    row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (cur.lastrowid,)).fetchone()
     c.close()
     return jsonify(D(row)), 201
 
@@ -1147,15 +1148,16 @@ def create_payee():
 def update_payee(pid):
     d = request.get_json() or {}
     c = get_user_db()
-    old = c.execute("SELECT id, name, category FROM payees WHERE id=?", (pid,)).fetchone()
+    old = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
     if not old:
         c.close()
         return jsonify({"error": "not found"}), 404
     old_name = old["name"]
     new_name = d.get("name", old_name).strip() or old_name
     new_category = d.get("category", old["category"]) or ""
+    new_subcategory = (d.get("subcategory", old["subcategory"]) or "").strip()
     try:
-        c.execute("UPDATE payees SET name=?, category=? WHERE id=?", (new_name, new_category, pid))
+        c.execute("UPDATE payees SET name=?, category=?, subcategory=? WHERE id=?", (new_name, new_category, new_subcategory, pid))
         if new_name != old_name:
             c.execute("UPDATE transactions SET payee=? WHERE payee=?", (new_name, old_name))
             c.execute("UPDATE templates SET payee=? WHERE payee=?", (new_name, old_name))
@@ -1163,7 +1165,7 @@ def update_payee(pid):
     except Exception as e:
         c.close()
         return jsonify({"error": str(e)}), 400
-    row = c.execute("SELECT id, name, category FROM payees WHERE id=?", (pid,)).fetchone()
+    row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
     c.close()
     return jsonify(D(row))
 

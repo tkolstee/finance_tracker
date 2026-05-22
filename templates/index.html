@@ -513,7 +513,8 @@
           <thead><tr>
             <th style="width:90px">ID</th>
             <th>Name</th>
-            <th style="width:220px">Category</th>
+            <th style="width:160px">Category</th>
+            <th style="width:160px">Subcategory</th>
             <th style="width:130px"></th>
           </tr></thead>
           <tbody id="payees-body"></tbody>
@@ -530,7 +531,9 @@
         <label>Name</label>
         <input class="filter-input account-form-input" id="payee-form-name" type="text" placeholder="Payee name">
         <label>Category</label>
-        <input class="filter-input account-form-input" id="payee-form-category" type="text" placeholder="Category" list="cat-list">
+        <input class="filter-input account-form-input" id="payee-form-category" type="text" placeholder="Main category" list="cat-list" oninput="onPayeeCategoryInput()">
+        <label>Subcategory</label>
+        <input class="filter-input account-form-input" id="payee-form-subcategory" type="text" placeholder="Subcategory (optional)" list="subcat-list">
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
           <button type="button" class="btn-ac btn-sm" onclick="savePayeeForm()">Save Payee</button>
           <button type="button" class="btn-ol btn-sm" onclick="resetPayeeForm()">New Payee</button>
@@ -540,6 +543,8 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees5"></script>
+<datalist id="cat-list"></datalist>
+<datalist id="subcat-list"></datalist>
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees6"></script>
 </body>
 </html>
