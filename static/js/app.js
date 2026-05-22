@@ -5,16 +5,12 @@ let monthCounts   = {};
 let payeeBadges   = {}, tmplBadges = {};
 let balChart      = null;
 let chartVisible  = true;
-let payeeDefaults = {};
+let payeeDefaults = {}; // legacy, replaced by payeesMap
+let payeesMap     = {}; // name → category from payees table
+let payeesList    = []; // [{id, name, category}] from payees table
 let accounts      = [];
 let accountsById  = {};
 let selectedAccountIds = null; // null = all accounts; empty Set = none selected
-// Payees view state
-const PAYEE_COLORS = [
-  '#4f7ef8','#22c55e','#ef4444','#f59e0b','#8b5cf6','#06b6d4','#fb7185','#f97316',
-  '#10b981','#6366f1','#ef9a9a','#60a5fa'
-];
-let payeesState = { colors:{}, selected:new Set(), order:[] };
 
 // All-transactions view state
 let allTransactions   = [];
@@ -57,10 +53,7 @@ function applyLocalTxnField(id, field, value){
   if(i===-1) return;
   transactions[i] = {...transactions[i], [field]: value};
   if(field==='payee' && value) addPayee(value);
-  if(field==='category' && value){
-    addCat(value);
-    if(transactions[i].payee) payeeDefaults[transactions[i].payee] = value;
-  }
+  if(field==='category' && value) addCat(value);
 }
 
 function applyLocalTmplField(id, field, value){
@@ -200,9 +193,11 @@ function addCat(c){ if(c&&!categories.has(c)){categories.add(c);updateDL();} }
 function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 
 function getPayeeAutocompleteOptions(){
+  const accountNames = new Set(accounts.map(acc=>(acc.name||'').toLowerCase()));
   const options = new Map();
   [...payees].forEach(name=>{
-    if(name) options.set(`payee:${name.toLowerCase()}`, {label:name, kind:'payee'});
+    if(name && !accountNames.has(name.toLowerCase()))
+      options.set(`payee:${name.toLowerCase()}`, {label:name, kind:'payee'});
   });
   accounts.forEach(acc=>{
     const label = acc.name || `Account ${acc.id}`;
@@ -759,17 +754,24 @@ async function refreshSuggestions(){
     fetch('/api/payees').then(r=>r.json()).catch(()=>[]),
   ]);
   categories=new Set(cats.filter(Boolean));
-  payees=new Set(pList.filter(Boolean));
+  payeesList=pList;
+  payeesMap={};
+  pList.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
   templates.forEach(t=>{if(t.category)categories.add(t.category);if(t.payee)payees.add(t.payee);});
+}
+
+function getTxnCategory(txn){
+  const name=txn.payee||'';
+  if(name && Object.prototype.hasOwnProperty.call(payeesMap,name)) return payeesMap[name]||'';
+  return txn.category||'';
 }
 
 function getPayeeDefaultCategory(payee){
   if(!payee) return null;
+  if(Object.prototype.hasOwnProperty.call(payeesMap,payee)) return payeesMap[payee]||null;
   const tmplMatch=templates.filter(t=>t.payee===payee&&t.category).sort((a,b)=>b.id-a.id)[0];
   if(tmplMatch) return tmplMatch.category;
-  const txnMatch=transactions.filter(t=>t.payee===payee&&t.category).sort((a,b)=>b.id-a.id)[0];
-  if(txnMatch) return txnMatch.category;
-  return payeeDefaults[payee]||null;
+  return null;
 }
 
 // ═══════════ SORT ═══════════
@@ -1594,6 +1596,11 @@ function makePayeeAllSpan(txn,section){
   }
 
 function makeEC(txn, field, type, extraClass, section){
+  if(field==='category'){
+    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-derived';
+    const span=document.createElement('span'); span.textContent=getTxnCategory(txn);
+    td.appendChild(span); return td;
+  }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
   let span;
@@ -1614,7 +1621,6 @@ function makeEC(txn, field, type, extraClass, section){
 
   td.onclick=e=>{
     if(td.querySelector('input,select')) return;
-    if(txn.transfer_group_id && field==='payee') return;
     editingTxnId=txn.id;
     span.style.display='none';
     let el;
@@ -1661,11 +1667,9 @@ function makeEC(txn, field, type, extraClass, section){
         if(String(acc.id)===String(txn.account_id)) opt.selected=true;
         el.appendChild(opt);
       });
-    }else if(field==='category'){
-      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
     }else if(field==='payee'){
-      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
+      el=document.createElement('input'); el.type='text'; el.className='cell-input';
+      el.value=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn[field]||'');
       if(txn.transfer_account_id) el.dataset.transferAccountId=String(txn.transfer_account_id);
       el.addEventListener('input', ()=>{ delete el.dataset.transferAccountId; });
       acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; setTemplatePayeeSelection(el,opt); }, makeOnTab);
@@ -1704,12 +1708,10 @@ function makeEC(txn, field, type, extraClass, section){
         const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
         if(!payeeChanged&&!transferChanged) return false;
         if(v) addPayee(v);
-        if(payeeChanged) updateField(txn.id,'payee',v);
-        if(transferChanged) updateField(txn.id,'transfer_account_id',transferAccountId);
+        updatePayeeAndTransfer(txn.id, payeeChanged?v:latest.payee, transferChanged?transferAccountId:latest.transfer_account_id);
         return true;
       }
       if(valuesEqual(field, latest[field], v)) return false;
-      if(field==='category'&&v) addCat(v);
       updateField(txn.id,field,v);
       return true;
     };
@@ -1951,30 +1953,35 @@ function renderSection(bodyId, rows){
 // ═══════════ MUTATIONS — TXN ═══════════
 async function updateField(id, field, value){
   const txn=getTxnById(id);
-  if(!txn || valuesEqual(field, txn[field], value)) return;
+  if(!txn) return;
 
   const patch = {[field]: value};
-  if(txn.transfer_group_id && field==='payee') return;
   applyLocalTxnField(id, field, value);
-  if(field==='payee'){
-    const txnNow=getTxnById(id);
-    if(txnNow && !txnNow.category){
-      const def=getPayeeDefaultCategory(value);
-      if(def){
-        applyLocalTxnField(id, 'category', def);
-        patch.category = def;
-      }
-    }
-  }
 
   const data=await fetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  if(txn.transfer_group_id){
+  if(txn.transfer_group_id || field==='transfer_account_id'){
     transactions=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
   }else{
     const i=transactions.findIndex(t=>t.id===id);
     if(i!==-1) transactions[i]={...transactions[i],...data};
   }
+  computePayeeBadges();
+  if(!hasActiveEditor()) renderTransactions();
+  else updateSums();
+  await refreshBalances();
+  refreshSuggestions();
+}
+
+async function updatePayeeAndTransfer(id, payee, transferAccountId){
+  const txn=getTxnById(id);
+  if(!txn) return;
+  applyLocalTxnField(id,'payee',payee);
+  applyLocalTxnField(id,'transfer_account_id',transferAccountId);
+  const patch={payee,transfer_account_id:transferAccountId};
+  await fetch(`/api/transactions/${id}`,
+    {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
+  transactions=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
   computePayeeBadges();
   if(!hasActiveEditor()) renderTransactions();
   else updateSums();
@@ -2028,191 +2035,77 @@ async function doInit(mode){
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 
-// ── Payees full view implementation ───────────────────────────────────────
-let payeesChart = null;
-let payeesDateDefaults = {from:'', to:''};
-
-function pad2(n){ return String(n).padStart(2,'0'); }
-
-function dateToMonthValue(dateStr){
-  return dateStr ? String(dateStr).slice(0, 7) : '';
-}
-
-function monthValueToStartDate(monthValue){
-  if(!monthValue) return '';
-  const [year, month] = monthValue.split('-').map(Number);
-  if(!year || !month) return '';
-  return `${year}-${pad2(month)}-01`;
-}
-
-function monthValueToEndDate(monthValue){
-  if(!monthValue) return '';
-  const [year, month] = monthValue.split('-').map(Number);
-  if(!year || !month) return '';
-  const lastDay = new Date(year, month, 0).getDate();
-  return `${year}-${pad2(month)}-${pad2(lastDay)}`;
-}
-
-function getPayeesMonthRangeMeta(from, to){
-  if(!from || !to) return {monthCount: 0};
-  const [fromYear, fromMonth] = from.split('-').map(Number);
-  const [toYear, toMonth] = to.split('-').map(Number);
-  if(!fromYear || !fromMonth || !toYear || !toMonth) return {monthCount: 0};
-  const months = (toYear - fromYear) * 12 + (toMonth - fromMonth) + 1;
-  return {monthCount: Math.max(1, months)};
-}
-
-function getPayeesDateBounds(){
-  const fromValue = document.getElementById('payees-from')?.value || payeesDateDefaults.from || '';
-  const toValue = document.getElementById('payees-to')?.value || payeesDateDefaults.to || '';
-  return {
-    fromValue,
-    toValue,
-    fromDate: monthValueToStartDate(fromValue),
-    toDate: monthValueToEndDate(toValue),
-  };
-}
+// ── Payees admin view ─────────────────────────────────────────────────────
 
 async function loadPayeesView(){
-  // Ensure we've loaded the payee and transaction data before building the list.
-  if(!allTransactions || allTransactions.length===0){
-    const [txns, payeeList] = await Promise.all([
-      resilientApiFetch('/api/transactions/all').then(r=>r.json()),
-      resilientApiFetch('/api/payees').then(r=>r.json()).catch(()=>[]),
-    ]);
-    allTransactions = txns || [];
-    if(payeesState.order.length===0){
-      payeesState.order = [...new Set((payeeList||[]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const data=await resilientApiFetch('/api/payees').then(r=>r.json()).catch(()=>[]);
+  payeesList=data;
+  payeesMap={};
+  data.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
+  renderPayeesAdmin();
+}
+
+function renderPayeesAdmin(){
+  const tbody=document.getElementById('payees-body');
+  const countEl=document.getElementById('payees-count');
+  if(!tbody) return;
+  tbody.innerHTML='';
+  if(countEl) countEl.textContent=payeesList.length?`(${payeesList.length})`:'';
+  payeesList.forEach(p=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td style="color:var(--mu);font-size:11px">${p.id}</td>
+      <td>${escHtml(p.name)}</td>
+      <td>${escHtml(p.category||'')}</td>
+      <td style="text-align:right">
+        <button class="btn-ol btn-sm" onclick="editPayeeForm(${p.id})">Edit</button>
+        <button class="del-btn" style="margin-left:4px" onclick="deletePayee(${p.id})" title="Delete"><i class="bi bi-x-lg"></i></button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function editPayeeForm(id){
+  const p=payeesList.find(x=>x.id===id); if(!p) return;
+  document.getElementById('payee-form-id').value=id;
+  document.getElementById('payee-form-name').value=p.name||'';
+  document.getElementById('payee-form-category').value=p.category||'';
+  document.getElementById('payee-form-name').focus();
+}
+
+function resetPayeeForm(){
+  document.getElementById('payee-form-id').value='';
+  document.getElementById('payee-form-name').value='';
+  document.getElementById('payee-form-category').value='';
+  document.getElementById('payee-form-name').focus();
+}
+
+async function savePayeeForm(){
+  const id=document.getElementById('payee-form-id').value;
+  const name=(document.getElementById('payee-form-name').value||'').trim();
+  const category=(document.getElementById('payee-form-category').value||'').trim();
+  if(!name){ document.getElementById('payee-form-name').focus(); return; }
+  try{
+    if(id){
+      await resilientApiFetch(`/api/payees/${id}`,
+        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category})}).then(r=>r.json());
+    }else{
+      await resilientApiFetch('/api/payees',
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category})}).then(r=>r.json());
     }
-  }
-  // build payee ordering if empty from the loaded transactions
-  const names = [...new Set(collapseTransferRows(allTransactions).map(t=>getTxnDisplayPayee(t)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  if(names.length){
-    payeesState.order = [...new Set([...(payeesState.order||[]), ...names])];
-  }
-  if(payeesState.order.length===0) payeesState.order = names;
-  if(payeesState.order.length===0){
-    payeesState.order = [...new Set((payees||[]).values())].sort((a,b)=>a.localeCompare(b));
-  }
-  // assign colors
-  payeesState.order.forEach((p,i)=>{ if(!payeesState.colors[p]) payeesState.colors[p]=PAYEE_COLORS[i%PAYEE_COLORS.length]; });
-
-  const dates = (allTransactions||[]).map(t=>t.date).filter(Boolean).sort();
-  const fromEl = document.getElementById('payees-from');
-  const toEl   = document.getElementById('payees-to');
-  payeesDateDefaults = {
-    from: dates.length ? dateToMonthValue(dates[0]) : '',
-    to: dates.length ? dateToMonthValue(dates[dates.length-1]) : '',
-  };
-  if(fromEl && !fromEl.value && payeesDateDefaults.from) fromEl.value = payeesDateDefaults.from;
-  if(toEl && !toEl.value && payeesDateDefaults.to) toEl.value = payeesDateDefaults.to;
-
-  buildPayeesList();
-  renderPayeesView();
+    await loadPayeesView();
+    resetPayeeForm();
+    toast(id?'Payee updated':'Payee created');
+  }catch(e){ console.error('savePayeeForm',e); }
 }
 
-function resetPayeesDateRange(){
-  const fromEl = document.getElementById('payees-from');
-  const toEl   = document.getElementById('payees-to');
-  if(fromEl) fromEl.value = payeesDateDefaults.from || '';
-  if(toEl) toEl.value = payeesDateDefaults.to || '';
-  renderPayeesView();
-}
-
-function getPayeesRangeMeta(from, to){
-  return getPayeesMonthRangeMeta(from, to);
-}
-
-function getPayeeStats(payee, labels, dateSet){
-  const total = collapseTransferRows(allTransactions).reduce((sum, t)=>{
-    if(getTxnDisplayPayee(t) !== payee || !t.date || !dateSet.has(t.date)) return sum;
-    return sum + Math.abs(parseFloat(t.amount||0));
-  }, 0);
-  return total;
-}
-
-function buildPayeesList(){
-  const wrap=document.getElementById('payees-list'); if(!wrap) return; wrap.innerHTML='';
-  const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
-  const rangeRows = collapseTransferRows(allTransactions).filter(t=>t.date && (!fromDate || t.date>=fromDate) && (!toDate || t.date<=toDate));
-  const dateSet = new Set(rangeRows.map(t=>t.date));
-  const {monthCount} = getPayeesRangeMeta(fromValue, toValue);
-  payeesState.order.forEach(p=>{
-    const row=document.createElement('div'); row.className='payee-item';
-    const chk=document.createElement('input'); chk.type='checkbox'; chk.checked=payeesState.selected.has(p);
-    chk.onchange=()=>{ if(chk.checked) payeesState.selected.add(p); else payeesState.selected.delete(p); renderPayeesView(); };
-    const sw=document.createElement('div'); sw.className='payee-color'; sw.style.backgroundColor=payeesState.colors[p]||'#888';
-    const lbl=document.createElement('div'); lbl.className='payee-name'; lbl.textContent=p;
-    const stats=document.createElement('div'); stats.className='payee-stats';
-    const total=getPayeeStats(p, rangeRows, dateSet);
-    const avg=monthCount ? total / monthCount : 0;
-    stats.innerHTML = `<span class="payee-total">${fmt(total)}</span><span class="payee-avg">${fmt(avg)}/mo</span>`;
-    row.appendChild(chk); row.appendChild(sw); row.appendChild(lbl); row.appendChild(stats); wrap.appendChild(row);
-  });
-}
-
-function renderPayeesView(){
-  const {fromValue, toValue, fromDate, toDate} = getPayeesDateBounds();
-  // determine date bounds
-  let minDate = fromDate, maxDate = toDate;
-  const visibleTxns = collapseTransferRows(allTransactions);
-  const rows = visibleTxns.filter(t=>t.date && (!minDate || t.date>=minDate) && (!maxDate || t.date<=maxDate));
-  if(!minDate && rows.length) minDate = rows.map(r=>r.date).sort()[0];
-  if(!maxDate && rows.length) maxDate = rows.map(r=>r.date).sort().reverse()[0];
-  if(!minDate || !maxDate){ if(payeesChart){ payeesChart.destroy(); payeesChart=null; } document.getElementById('payees-body').innerHTML=''; return; }
-  // aggregate data by month between minDate and maxDate
-  const s = new Date(minDate), e = new Date(maxDate);
-  const startYear = s.getFullYear(), startMonth = s.getMonth();
-  const endYear = e.getFullYear(), endMonth = e.getMonth();
-  const monthsCount = (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
-  const labels = [];
-  for(let i=0;i<monthsCount;i++){ const d = new Date(startYear, startMonth + i, 1); labels.push(d.toISOString().slice(0,10)); }
-  // selected payees and datasets aggregated per month
-  const selected = [...payeesState.selected];
-  const datasets = selected.map((p, idx)=>{
-    const data = labels.map(l=>0);
-    const monthMap = new Map(labels.map((l,i)=>[l.slice(0,7), i]));
-    for(const t of visibleTxns){ if(getTxnDisplayPayee(t)===p && t.date){ const key = t.date.slice(0,7); const i = monthMap.get(key); if(i!==undefined && i>=0 && i<data.length) data[i] += Math.abs(parseFloat(t.amount||0)); } }
-    return { label:p, data, backgroundColor: payeesState.colors[p]||PAYEE_COLORS[idx%PAYEE_COLORS.length], stack:'s1' };
-  });
-  const ctx = document.getElementById('payees-bar-chart').getContext('2d');
-  if(payeesChart) payeesChart.destroy();
-  payeesChart = new Chart(ctx, {
-    type:'bar', data:{ labels: labels, datasets },
-    options:{
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{legend:{position:'top'}},
-      scales:{
-        x:{
-          stacked:true,
-          ticks:{
-            maxRotation:0,
-            minRotation:0,
-            autoSkip:true,
-            maxTicksLimit:12,
-            callback:(tickValue, index)=>{
-              const label = labels[index] || '';
-              return label ? label.slice(0,7) : '';
-            }
-          },
-          grid:{
-            // vertical grid lines at each month
-            color: 'rgba(0,0,0,0.03)',
-            drawTicks:false,
-            borderDash:[2,2]
-          }
-        },
-        y:{ stacked:true, beginAtZero:true }
-      }
-    }
-  });
-  // render txn list
-  const tb=document.getElementById('payees-body'); tb.innerHTML='';
-  const visible = visibleTxns.filter(t=>payeesState.selected.has(getTxnDisplayPayee(t)) && t.date && t.date>=labels[0] && t.date<=labels[labels.length-1])
-                   .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||a.id-b.id);
-  for(const t of visible){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${t.date}</td><td>${t.entry_type==='credit'?'Income':'Expense'}</td><td>${getTxnDisplayPayee(t)}</td><td>${t.category||''}</td><td style="text-align:right">${fmt(t.amount)}</td><td>${t.notes||''}</td>`; tb.appendChild(tr); }
-  buildPayeesList();
+async function deletePayee(id){
+  if(!confirm('Delete this payee? Existing transactions will keep their payee name but the category association is removed.')) return;
+  await resilientApiFetch(`/api/payees/${id}`,{method:'DELETE'});
+  await loadPayeesView();
+  if(document.getElementById('payee-form-id').value===String(id)) resetPayeeForm();
+  toast('Payee deleted');
 }
 
 // ═══════════ TEMPLATE BUILDER ═══════════
@@ -2288,6 +2181,13 @@ function makeTmplAccountSpan(tmpl){
   return span;
 }
 function makeTmplEC(tmpl,field,type,style,section){
+  if(field==='category'){
+    const td=document.createElement('td'); td.className='cat-derived';
+    if(style) td.style.cssText=style;
+    const span=document.createElement('span');
+    span.textContent=Object.prototype.hasOwnProperty.call(payeesMap,tmpl.payee||'')?payeesMap[tmpl.payee]:(tmpl.category||'');
+    td.appendChild(span); return td;
+  }
   const td=document.createElement('td'); td.className='teditable'+(field==='account_id'?' account-col':'');
   if(style) td.style.cssText=style;
   let span;
@@ -2444,16 +2344,6 @@ async function updateTmpl(id,field,value){
 
   applyLocalTmplField(id, field, value);
   const patch = {[field]: value};
-  if(field==='payee'){
-    const tmplNow=getTmplById(id);
-    if(tmplNow && !tmplNow.category){
-      const def=getPayeeDefaultCategory(value);
-      if(def){
-        applyLocalTmplField(id, 'category', def);
-        patch.category = def;
-      }
-    }
-  }
 
   const data=await fetch(`/api/templates/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
@@ -2522,6 +2412,11 @@ function pushStatusAll(txn){
 
 // ── Cell builders for all-transactions view ──────────────────────────────────
 function makeAllEC(txn,field,type,extraClass,section){
+  if(field==='category'){
+    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-derived';
+    const span=document.createElement('span'); span.textContent=getTxnCategory(txn);
+    td.appendChild(span); return td;
+  }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
   let span;
@@ -2537,7 +2432,6 @@ function makeAllEC(txn,field,type,extraClass,section){
 
   td.onclick=e=>{
     if(td.querySelector('input,select')) return;
-    if(txn.transfer_group_id && field==='payee') return;
     editingAllTxnId=txn.id;
     span.style.display='none';
     let el;
@@ -2569,14 +2463,9 @@ function makeAllEC(txn,field,type,extraClass,section){
       if(t&&t.type!=='ghost') setTimeout(()=>applyAllTxnTarget(t),80);
     };
 
-    if(field==='category'){
-      el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
-      acBind(el,()=>[...categories].sort(),opt=>{el.value=opt?.label||opt||'';},makeOnTab);
-    }else if(field==='payee'){
-      if(txn.transfer_group_id){
-        return;
-      }
-      el=document.createElement('input');el.type='text';el.className='cell-input';el.value=txn[field]||'';
+    if(field==='payee'){
+      el=document.createElement('input');el.type='text';el.className='cell-input';
+      el.value=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn[field]||'');
       if(txn.transfer_account_id) el.dataset.transferAccountId=String(txn.transfer_account_id);
       el.addEventListener('input', ()=>{ delete el.dataset.transferAccountId; });
       acBind(el,()=>getPayeeAutocompleteOptions(),opt=>{el.value=opt?.label||opt||'';setTemplatePayeeSelection(el,opt);},makeOnTab);
@@ -2607,12 +2496,10 @@ function makeAllEC(txn,field,type,extraClass,section){
         const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
         if(!payeeChanged&&!transferChanged) return false;
         if(v) addPayee(v);
-        if(payeeChanged) updateAllField(txn.id,'payee',v);
-        if(transferChanged) updateAllField(txn.id,'transfer_account_id',transferAccountId);
+        updateAllPayeeAndTransfer(txn.id, payeeChanged?v:latest.payee, transferChanged?transferAccountId:latest.transfer_account_id);
         return true;
       }
       if(valuesEqual(field,latest[field],v)) return false;
-      if(field==='category'&&v) addCat(v);
       updateAllField(txn.id,field,v);
       return true;
     };
@@ -2729,25 +2616,31 @@ function renderAllTransactions(){
 // ── Mutations ────────────────────────────────────────────────────────────────
 async function updateAllField(id,field,value){
   const txn=getAllTxnById(id);
-  if(!txn||valuesEqual(field,txn[field],value)) return;
+  if(!txn) return;
   const patch={[field]:value};
-  if(txn.transfer_group_id && field==='payee') return;
   applyLocalAllTxnField(id,field,value);
-  if(field==='payee'){
-    const now=getAllTxnById(id);
-    if(now&&!now.category){
-      const def=getPayeeDefaultCategory(value);
-      if(def){applyLocalAllTxnField(id,'category',def);patch.category=def;}
-    }
-  }
   const data=await resilientApiFetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  if(txn.transfer_group_id){
+  if(txn.transfer_group_id||field==='transfer_account_id'){
     allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
   }else{
     const i=allTransactions.findIndex(t=>t.id===id);
     if(i!==-1) allTransactions[i]={...allTransactions[i],...data};
   }
+  computeAllPayeeBadges();
+  if(!hasActiveEditor()) renderAllTransactions();
+  refreshSuggestions();
+}
+
+async function updateAllPayeeAndTransfer(id,payee,transferAccountId){
+  const txn=getAllTxnById(id);
+  if(!txn) return;
+  applyLocalAllTxnField(id,'payee',payee);
+  applyLocalAllTxnField(id,'transfer_account_id',transferAccountId);
+  const patch={payee,transfer_account_id:transferAccountId};
+  await resilientApiFetch(`/api/transactions/${id}`,
+    {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
+  allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
   computeAllPayeeBadges();
   if(!hasActiveEditor()) renderAllTransactions();
   refreshSuggestions();
@@ -3088,11 +2981,16 @@ function initGhostRows(){
   const wire=(pfx, inputIds, commitFn)=>{
     const payeeEl=document.getElementById(`${pfx}-payee`);
     const catEl  =document.getElementById(`${pfx}-cat`);
+    if(catEl){ catEl.readOnly=true; catEl.style.cursor='default'; catEl.style.color='var(--mu)'; }
+    const updateCat=()=>{
+      if(!catEl||!payeeEl) return;
+      const name=payeeEl.value.trim();
+      catEl.value=Object.prototype.hasOwnProperty.call(payeesMap,name)?payeesMap[name]:'';
+    };
     if(payeeEl){
-      payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; });
-      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; setTemplatePayeeSelection(payeeEl,opt); },null);
+      payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; updateCat(); });
+      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; setTemplatePayeeSelection(payeeEl,opt); updateCat(); },null);
     }
-    if(catEl)   acBind(catEl,  ()=>[...categories].sort(),opt=>{ catEl.value=opt?.label||opt||''; },null);
     inputIds.forEach((id, i)=>{
       const el=document.getElementById(id); if(!el) return;
       const isLast = i === inputIds.length - 1;
@@ -3127,11 +3025,16 @@ function initGhostRows(){
   // All-transactions ghost row
   const giaPayee=document.getElementById('gia-payee');
   const giaCat  =document.getElementById('gia-cat');
+  if(giaCat){ giaCat.readOnly=true; giaCat.style.cursor='default'; giaCat.style.color='var(--mu)'; }
+  const updateGiaCat=()=>{
+    if(!giaCat||!giaPayee) return;
+    const name=giaPayee.value.trim();
+    giaCat.value=Object.prototype.hasOwnProperty.call(payeesMap,name)?payeesMap[name]:'';
+  };
   if(giaPayee){
-    giaPayee.addEventListener('input', ()=>{ delete giaPayee.dataset.transferAccountId; });
-    acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; setTemplatePayeeSelection(giaPayee,opt); },null);
+    giaPayee.addEventListener('input', ()=>{ delete giaPayee.dataset.transferAccountId; updateGiaCat(); });
+    acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; setTemplatePayeeSelection(giaPayee,opt); updateGiaCat(); },null);
   }
-  if(giaCat)   acBind(giaCat,  ()=>[...categories].sort(),opt=>{ giaCat.value=opt?.label||opt||''; },null);
   const giaIds=['gia-date','gia-payee','gia-cat','gia-amount','gia-notes'];
   giaIds.forEach((id, i)=>{
     const el=document.getElementById(id); if(!el) return;
@@ -3163,17 +3066,17 @@ function initGhostRows(){
   // Initialize default sort states
   resetSortState(['income-body','expense-body','transfer-body'],'date');
   resetSortState(['tmpl-income-body','tmpl-expense-body'],'day_of_month');
-  const[cats,counts,tmpls,payeeList,pd]=await Promise.all([
+  const[cats,counts,tmpls,payeeObjects]=await Promise.all([
     fetch('/api/categories').then(r=>r.json()).catch(()=>[]),
     fetch('/api/months/list').then(r=>r.json()).catch(()=>({})),
     fetch('/api/templates').then(r=>r.json()).catch(()=>[]),
     fetch('/api/payees').then(r=>r.json()).catch(()=>[]),
-    fetch('/api/payee-defaults').then(r=>r.json()).catch(()=>({})),
   ]);
   await loadAccounts();
   cats.forEach(c=>c&&addCat(c));
-  payeeList.forEach(p=>p&&addPayee(p));
-  payeeDefaults=pd;
+  payeesList=payeeObjects;
+  payeesMap={};
+  payeeObjects.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=p.category||''; } });
   monthCounts=counts;
   templates=tmpls;
   templates.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
