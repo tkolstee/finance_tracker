@@ -155,6 +155,24 @@
       <td><button type="button" class="ghost-commit-btn" onclick="commitGhostMonthly('debit')" title="Add row (Enter)">⮐</button></td>
     </tr></tfoot></table>
 
+    <div class="section-header transfer-section" style="margin-top:1px">
+      <i class="bi bi-arrow-left-right" style="color:var(--mu)"></i>
+      Transfers <span class="section-sum" id="transfer-sum"></span>
+    </div>
+    <table class="txn-table transfer-section" id="tbl-transfer"><thead><tr>
+      <th class="w-ac account-col th-sort" data-sort="transfer-body:account_id">Account <span class="sort-icon" id="si-transfer-account"></span></th>
+      <th class="w-dt th-sort" data-sort="transfer-body:date">Date <span class="sort-icon" id="si-transfer-date"></span></th>
+      <th class="w-py th-sort" data-sort="transfer-body:payee">To/From <span class="sort-icon" id="si-transfer-payee"></span></th>
+      <th class="w-ca th-sort" data-sort="transfer-body:category">Category <span class="sort-icon" id="si-transfer-category"></span></th>
+      <th class="w-am th-sort" data-sort="transfer-body:amount" style="text-align:right">Amount <span class="sort-icon" id="si-transfer-amount"></span></th>
+      <th class="w-no th-sort" data-sort="transfer-body:notes">Memo <span class="sort-icon" id="si-transfer-notes"></span></th>
+      <th class="w-st th-sort" data-sort="transfer-body:status">Status <span class="sort-icon" id="si-transfer-status"></span></th>
+      <th class="w-fl" title="Auto"><i class="bi bi-lightning-fill"></i></th>
+      <th class="w-fl" title="Push to Template"><i class="bi bi-cloud-upload"></i></th>
+      <th class="w-de"></th>
+    </tr></thead>
+    <tbody id="transfer-body"></tbody></table>
+
     <div style="height:40px"></div>
   </div>
 </div><!-- /monthly -->

@@ -125,6 +125,9 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 .txn-table td{padding:3px 5px;border-bottom:1px solid rgba(44,47,62,.45);vertical-align:middle}
 .account-col{display:none}
 body.show-account-cols .account-col{display:table-cell}
+.transfer-section{display:none}
+body.show-account-cols .transfer-section.section-header{display:flex}
+body.show-account-cols .transfer-section.txn-table{display:table}
 .txn-row:hover:not(.ghost-row) td{background:rgba(255,255,255,.022)}
 .ghost-row td{color:var(--mu);font-style:italic;cursor:pointer;
               border-bottom:1px dashed rgba(44,47,62,.7)}
