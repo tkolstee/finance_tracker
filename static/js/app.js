@@ -24,6 +24,44 @@ const API_RETRY_CAP_MS = 8000;
 
 const nativeFetch = window.fetch.bind(window);
 
+// Cross-window sync via BroadcastChannel
+const _syncChannel = typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('finance-tracker-sync')
+  : null;
+
+function _broadcastMutation(url, method){
+  if(!_syncChannel) return;
+  // Classify what changed so the receiver knows what to refresh
+  let type = 'generic';
+  if(/\/api\/payees/.test(url))      type = 'payees';
+  else if(/\/api\/months/.test(url)) type = 'month';
+  else if(/\/api\/templates/.test(url)) type = 'templates';
+  else if(/\/api\/accounts/.test(url))  type = 'accounts';
+  _syncChannel.postMessage({type, url, method, ts: Date.now()});
+}
+
+async function _syncFromBroadcast(type){
+  // Don't disrupt an open cell editor — just refresh background state silently
+  const editing = hasActiveEditor();
+  if(type==='payees' || type==='generic'){
+    await refreshSuggestions();
+    if(!editing){ renderTransactions(); renderTemplates(); }
+  }
+  if(type==='month' || type==='generic'){
+    if(!editing) await loadMonth(currentMonth);
+  }
+  if(type==='templates' || type==='generic'){
+    if(!editing) loadTemplates();
+  }
+  if(type==='accounts' || type==='generic'){
+    if(!editing) renderAccountsView();
+  }
+}
+
+if(_syncChannel){
+  _syncChannel.onmessage = e => { _syncFromBroadcast(e.data?.type || 'generic'); };
+}
+
 // Sort state: bodyId → {col, dir}
 let sortState = {};
 
@@ -125,6 +163,12 @@ async function resilientApiFetch(input, init){
         continue;
       }
       hideConnModal();
+      // Broadcast mutations so other open windows can refresh
+      const method = (init?.method||'GET').toUpperCase();
+      if(response.ok && (method==='POST'||method==='PUT'||method==='DELETE'||method==='PATCH')){
+        const url = typeof input==='string' ? input : (input?.url||'');
+        _broadcastMutation(url, method);
+      }
       return response;
     }catch(err){
       if(!isRetryableApiFailure(err, null)) throw err;

@@ -39,6 +39,14 @@ from auth import (
 app = Flask(__name__)
 app.config["APP_VERSION"] = APP_VERSION
 
+
+@app.after_request
+def _no_cache_api(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR   = os.path.abspath(os.environ.get("FINANCE_TRACKER_DATA_DIR", SCRIPT_DIR))
 
@@ -692,6 +700,7 @@ def update_txn(tid):
                     transfer_fields[f] = d[f]
             update_transfer_pair(c, txn, transfer_fields)
 
+    _prune_orphan_payees(c)
     c.commit()
     return jsonify(D(fetch_txn(c, tid)))
 
@@ -765,6 +774,7 @@ def del_txn(tid):
         c.execute("DELETE FROM transactions WHERE transfer_group_id=?", (txn["transfer_group_id"],))
     else:
         c.execute("DELETE FROM transactions WHERE id=?", (tid,))
+    _prune_orphan_payees(c)
     c.commit()
     c.close()
     return jsonify({"deleted": tid})
@@ -1009,6 +1019,7 @@ def update_template(tid):
         return jsonify({"error": "no fields"}), 400
     vals.append(tid)
     c.execute(f"UPDATE templates SET {','.join(fields)} WHERE id=?", vals)
+    _prune_orphan_payees(c)
     c.commit()
     return jsonify(D(c.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()))
 
@@ -1018,6 +1029,7 @@ def update_template(tid):
 def del_template(tid):
     c = get_user_db()
     c.execute("DELETE FROM templates WHERE id=?", (tid,))
+    _prune_orphan_payees(c)
     c.commit()
     c.close()
     return jsonify({"deleted": tid})
@@ -1111,6 +1123,17 @@ def list_categories():
         UNION SELECT category FROM templates WHERE category!='') ORDER BY category""").fetchall()
     c.close()
     return jsonify([r["category"] for r in rows])
+
+
+def _prune_orphan_payees(c):
+    c.execute("""
+        DELETE FROM payees
+        WHERE name NOT IN (
+            SELECT DISTINCT payee FROM transactions WHERE payee != ''
+            UNION
+            SELECT DISTINCT payee FROM templates   WHERE payee != ''
+        )
+    """)
 
 
 @app.route("/api/payees")
