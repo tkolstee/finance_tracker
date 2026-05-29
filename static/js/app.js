@@ -851,8 +851,14 @@ function setSort(bodyId, col){
   refreshSortIcons(bodyId);
   // Re-render relevant section
   if(bodyId==='income-body'||bodyId==='expense-body'||bodyId==='transfer-body') renderTransactions();
-  else if(bodyId==='tmpl-income-body') renderTmplSection('tmpl-income-body',templates.filter(t=>t.entry_type==='credit'));
-  else if(bodyId==='tmpl-expense-body') renderTmplSection('tmpl-expense-body',templates.filter(t=>t.entry_type==='debit'));
+  else if(bodyId==='tmpl-income-body') {
+    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id));
+    renderTmplSection('tmpl-income-body', visibleTemplates.filter(t=>t.entry_type==='credit'));
+  }
+  else if(bodyId==='tmpl-expense-body') {
+    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id));
+    renderTmplSection('tmpl-expense-body', visibleTemplates.filter(t=>t.entry_type==='debit'));
+  }
   else if(bodyId==='all-body') renderAllTransactions();
 }
 
@@ -2383,7 +2389,7 @@ function renderTmplSection(bodyId, rows){
   const entryType=bodyId==='tmpl-income-body'?'credit':'debit';
   sorted.forEach(tmpl=>{
     const tr=document.createElement('tr'); tr.className='tmpl-row'; tr.dataset.id=tmpl.id;
-    if(showAccountColumns()) tr.appendChild(makeTmplEC(tmpl,'account_id','text','',sorted));
+    tr.appendChild(makeTmplEC(tmpl,'account_id','text','',sorted));
     tr.appendChild(makeTmplEC(tmpl,'payee',   'text',  '',sorted));
     tr.appendChild(makeTmplEC(tmpl,'category','text',  ''));
     tr.appendChild(makeTmplEC(tmpl,'day_of_month','number','text-align:center'));
