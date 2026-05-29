@@ -852,11 +852,11 @@ function setSort(bodyId, col){
   // Re-render relevant section
   if(bodyId==='income-body'||bodyId==='expense-body'||bodyId==='transfer-body') renderTransactions();
   else if(bodyId==='tmpl-income-body') {
-    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id));
+    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id)));
     renderTmplSection('tmpl-income-body', visibleTemplates.filter(t=>t.entry_type==='credit'));
   }
   else if(bodyId==='tmpl-expense-body') {
-    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id));
+    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id)));
     renderTmplSection('tmpl-expense-body', visibleTemplates.filter(t=>t.entry_type==='debit'));
   }
   else if(bodyId==='all-body') renderAllTransactions();
@@ -2189,16 +2189,48 @@ async function loadTemplates(){
   computeTmplBadges(); renderTemplates();
   syncTemplateGhostAccountSelectors();
 }
-function updateTmplNet(){
-  const net=templates.reduce((acc,t)=>acc+(t.entry_type==='credit'?1:-1)*parseFloat(t.amount||0),0);
-  const el=document.getElementById('template-net');
-  if(el) el.innerHTML=fmtBal(net);
+function updateTmplNet(visibleTemplates){
+  const rows = visibleTemplates || templates;
+  let net = 0;
+  let incTotal = 0;
+  let expTotal = 0;
+  
+  rows.forEach(t => {
+    const sign = t.entry_type === 'credit' ? 1 : -1;
+    const amount = parseFloat(t.amount || 0);
+    
+    // Count from the main account
+    net += sign * amount;
+    if (t.entry_type === 'credit') incTotal += amount;
+    else expTotal += amount;
+    
+    // If this is a transfer template and both accounts are selected, also count from transfer account perspective
+    if (t.transfer_account_id && hasSelectedAccount(t.account_id) && hasSelectedAccount(t.transfer_account_id)) {
+      // From transfer account's perspective, the entry_type is opposite
+      const oppositeSign = -sign;
+      net += oppositeSign * amount;
+      if (t.entry_type === 'credit') {
+        expTotal += amount;
+      } else {
+        incTotal += amount;
+      }
+    }
+  });
+  
+  const netEl = document.getElementById('template-net');
+  if(netEl) netEl.innerHTML = fmtBal(net);
+  const incEl = document.getElementById('tmpl-income-sum');
+  if(incEl) incEl.textContent = incTotal ? fmt(incTotal) : '';
+  const expEl = document.getElementById('tmpl-expense-sum');
+  if(expEl) expEl.textContent = expTotal ? fmt(-expTotal) : '';
 }
 function renderTemplates(){
-  const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id));
+  const visibleTemplates = templates.filter(t=>{
+    return hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id));
+  });
   renderTmplSection('tmpl-income-body', visibleTemplates.filter(t=>t.entry_type==='credit'));
   renderTmplSection('tmpl-expense-body',visibleTemplates.filter(t=>t.entry_type==='debit'));
-  updateTmplNet();
+  updateTmplNet(visibleTemplates);
 }
 function getTemplateAccountOptions(){
   return accounts.map(acc=>({label: acc.name || `Account ${acc.id}`, value: String(acc.id)}));
