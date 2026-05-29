@@ -192,7 +192,7 @@
       <i class="bi bi-arrow-down-circle-fill" style="color:var(--gn)"></i> Income Templates
     </div>
     <table class="tmpl-table"><thead><tr>
-      <th style="width:150px" class="th-sort" data-sort="tmpl-income-body:account_id">From Account <span class="sort-icon" id="si-tmpl-income-account"></span></th>
+      <th style="width:150px" class="account-col th-sort" data-sort="tmpl-income-body:account_id">From Account <span class="sort-icon" id="si-tmpl-income-account"></span></th>
       <th style="width:190px" class="th-sort" data-sort="tmpl-income-body:payee">Source <span class="sort-icon" id="si-tmpl-income-payee"></span></th>
       <th style="width:150px" class="th-sort" data-sort="tmpl-income-body:category">Category <span class="sort-icon" id="si-tmpl-income-category"></span></th>
       <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-income-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-income-day">↑</span></th>
@@ -202,7 +202,7 @@
     </tr></thead>
     <tbody id="tmpl-income-body"></tbody>
     <tfoot><tr class="ghost-row">
-      <td><select class="ghost-inp ghost-sel" id="gt-inc-account"></select></td>
+      <td class="account-col"><select class="ghost-inp ghost-sel" id="gt-inc-account"></select></td>
       <td><input class="ghost-inp" id="gt-inc-payee" type="text" placeholder="Source"></td>
       <td><input class="ghost-inp" id="gt-inc-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gt-inc-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>
@@ -219,7 +219,7 @@
       <i class="bi bi-arrow-up-circle-fill" style="color:var(--rd)"></i> Expense Templates
     </div>
     <table class="tmpl-table"><thead><tr>
-      <th style="width:150px" class="th-sort" data-sort="tmpl-expense-body:account_id">From Account <span class="sort-icon" id="si-tmpl-expense-account"></span></th>
+      <th style="width:150px" class="account-col th-sort" data-sort="tmpl-expense-body:account_id">From Account <span class="sort-icon" id="si-tmpl-expense-account"></span></th>
       <th style="width:190px" class="th-sort" data-sort="tmpl-expense-body:payee">Payee <span class="sort-icon" id="si-tmpl-expense-payee"></span></th>
       <th style="width:150px" class="th-sort" data-sort="tmpl-expense-body:category">Category <span class="sort-icon" id="si-tmpl-expense-category"></span></th>
       <th style="width:60px;text-align:center" class="th-sort" data-sort="tmpl-expense-body:day_of_month">Day <span class="sort-icon" id="si-tmpl-expense-day">↑</span></th>
@@ -229,7 +229,7 @@
     </tr></thead>
     <tbody id="tmpl-expense-body"></tbody>
     <tfoot><tr class="ghost-row">
-      <td><select class="ghost-inp ghost-sel" id="gt-exp-account"></select></td>
+      <td class="account-col"><select class="ghost-inp ghost-sel" id="gt-exp-account"></select></td>
       <td><input class="ghost-inp" id="gt-exp-payee" type="text" placeholder="Payee"></td>
       <td><input class="ghost-inp" id="gt-exp-cat" type="text" placeholder="Category"></td>
       <td><input class="ghost-inp" id="gt-exp-day" type="number" min="1" max="31" placeholder="Day" style="text-align:center"></td>

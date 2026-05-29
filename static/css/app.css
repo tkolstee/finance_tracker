@@ -114,6 +114,7 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 .account-col{display:none}
 body.show-account-cols .account-col{display:table-cell}
 #view-monthly .account-col{display:table-cell}
+#view-template .account-col{display:table-cell}
 .transfer-section{display:none}
 body.show-account-cols .transfer-section.section-header{display:flex}
 body.show-account-cols .transfer-section.txn-table{display:table}

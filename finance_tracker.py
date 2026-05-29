@@ -138,7 +138,7 @@ def update_transfer_pair(c, txn, fields):
         elif key == "amount":
             peer_fields.append("amount=?")
             peer_vals.append(float(value))
-        elif key == "transfer_account_id":
+        elif key == "transfer_account_id" or key == "account_id":
             peer_fields.append("transfer_account_id=?")
             peer_vals.append(value)
         elif key in ("date", "category", "status", "notes", "recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
@@ -673,7 +673,7 @@ def update_txn(tid):
     # Update standard fields
     fields, vals = [], []
     for f in ["date", "payee", "category", "amount", "entry_type", "status",
-              "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order"]:
+              "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order", "account_id"]:
         if f not in d:
             continue
         # Don't allow payee changes on transfers (display derives from transfer_account_id)
@@ -683,7 +683,7 @@ def update_txn(tid):
         v = d[f]
         if f == "amount":
             v = float(v)
-        elif f in ("recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
+        elif f in ("recurs_monthly", "is_automatic", "is_adhoc", "sort_order", "account_id"):
             v = int(v)
         vals.append(v)
 
