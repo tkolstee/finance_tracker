@@ -1959,23 +1959,25 @@ function makeStatusCell(txn){
 
 // ═══════════ RENDER TRANSACTIONS ═══════════
 function updateSums(){
-  const visible=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>!t.transfer_group_id);
-  const inc=visible.filter(t=>t.entry_type==='credit');
-  const exp=visible.filter(t=>t.entry_type==='debit');
-  const s=arr=>arr.reduce((acc,t)=>acc+(t.entry_type==='credit'?t.amount:-t.amount),0);
-  const incTotal=s(inc), expTotal=s(exp);
-  document.getElementById('income-sum').textContent=fmt(incTotal);
-  document.getElementById('expense-sum').textContent=fmt(-expTotal);
-  const txferRows=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>t.transfer_group_id);
-  const txferTotal=txferRows.reduce((acc,t)=>acc+parseFloat(t.amount||0),0);
-  const tSumEl=document.getElementById('transfer-sum');
-  if(tSumEl) tSumEl.textContent=txferTotal?fmt(txferTotal):'';
+  const visible = getVisibleTransactions(collapseTransferRows(transactions));
+  const multiAccount = showAccountColumns();
+  const nonTxfers = multiAccount ? visible.filter(t=>!t.transfer_group_id) : visible;
+  const inc = nonTxfers.filter(t=>t.entry_type==='credit');
+  const exp = nonTxfers.filter(t=>t.entry_type==='debit');
+  const s = arr => arr.reduce((acc,t)=>acc+(t.entry_type==='credit'?t.amount:-t.amount),0);
+  const incTotal = s(inc), expTotal = s(exp);
+  document.getElementById('income-sum').textContent = fmt(incTotal);
+  document.getElementById('expense-sum').textContent = fmt(-expTotal);
+  const txferRows = visible.filter(t=>t.transfer_group_id);
+  const txferTotal = txferRows.reduce((acc,t)=>acc+parseFloat(t.amount||0),0);
+  const tSumEl = document.getElementById('transfer-sum');
+  if(tSumEl) tSumEl.textContent = txferTotal?fmt(txferTotal):'';
   // Net row in balance summary — broken out by status, filtered to visible accounts
   const sa=t=>t.entry_type==='credit'?t.amount:-t.amount;
-  const visibleNet=getVisibleTransactions(collapseTransferRows(transactions));
-  const netEst=visibleNet.reduce((acc,t)=>acc+sa(t),0);
-  const netAct=visibleNet.filter(t=>['actual','reconciled'].includes(t.status)).reduce((acc,t)=>acc+sa(t),0);
-  const netRec=visibleNet.filter(t=>t.status==='reconciled').reduce((acc,t)=>acc+sa(t),0);
+  const visibleNet = visible;
+  const netEst = visibleNet.reduce((acc,t)=>acc+sa(t),0);
+  const netAct = visibleNet.filter(t=>['actual','reconciled'].includes(t.status)).reduce((acc,t)=>acc+sa(t),0);
+  const netRec = visibleNet.filter(t=>t.status==='reconciled').reduce((acc,t)=>acc+sa(t),0);
   [['bs-net-est',netEst],['bs-net-act',netAct],['bs-net-rec',netRec]]
     .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
 }
