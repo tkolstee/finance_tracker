@@ -58,9 +58,13 @@ def get_users_conn():
 
 
 def get_user_db():
-    """Return a connection to the current authenticated user's tracker.db.
-    Runs ensure_schema() so per-user DBs are migrated on first access.
+    """Return the per-request user tracker DB connection.
+
+    Cached on Flask's g so the same connection is reused within one request.
+    Closed automatically by _teardown_user_db at the end of each request.
     """
+    if "_user_db" in g:
+        return g._user_db
     uc   = get_users_conn()
     user = get_user_by_id(uc, g.user_id)
     uc.close()
@@ -75,7 +79,15 @@ def get_user_db():
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=30000")
     ensure_schema(c)
+    g._user_db = c
     return c
+
+
+@app.teardown_appcontext
+def _teardown_user_db(exc):
+    c = g.pop("_user_db", None)
+    if c is not None:
+        c.close()
 
 
 def D(row):
@@ -206,6 +218,48 @@ def parse_account_ids_arg(args):
         if part.isdigit():
             account_ids.append(int(part))
     return account_ids or None
+
+
+def collapse_transfer_rows(rows, account_ids=None):
+    """Collapse transfer pairs into one display row each.
+
+    If account_ids is provided, prefer the leg whose account_id is in that set
+    (mirrors the JS collapseTransferRows logic). Falls back to the source leg.
+    Adds display_payee and is_transfer_display to the chosen row.
+    Non-transfer rows are passed through unchanged.
+    """
+    selected = set(str(aid) for aid in account_ids) if account_ids else None
+    by_group = {}
+    for row in rows:
+        gid = row.get("transfer_group_id")
+        if gid:
+            by_group.setdefault(gid, []).append(row)
+    seen = set()
+    result = []
+    for row in rows:
+        gid = row.get("transfer_group_id")
+        if not gid:
+            result.append(row)
+            continue
+        if gid in seen:
+            continue
+        seen.add(gid)
+        group = by_group.get(gid, [row])
+        chosen = None
+        if selected is not None:
+            chosen = next((r for r in group if str(r["account_id"]) in selected), None)
+            if not chosen:
+                chosen = next(
+                    (r for r in group if str(r.get("transfer_account_id") or "") in selected),
+                    None,
+                )
+        if not chosen:
+            chosen = next((r for r in group if r.get("transfer_role") == "source"), None) or group[0]
+        display = dict(chosen)
+        display["display_payee"] = chosen.get("transfer_account_name") or chosen.get("payee", "")
+        display["is_transfer_display"] = True
+        result.append(display)
+    return result
 
 
 def compute_bf_for_month(c, month, account_ids=None):
@@ -436,7 +490,6 @@ def admin_reset_user_data(uid):
     elif mode == "template":
         c.execute("DELETE FROM templates")
     c.commit()
-    c.close()
     return jsonify({"ok": True, "mode": mode, "user": user["username"]})
 
 
@@ -447,7 +500,6 @@ def admin_reset_user_data(uid):
 def months_list():
     c    = get_user_db()
     rows = c.execute("SELECT month, COUNT(*) n FROM transactions GROUP BY month").fetchall()
-    c.close()
     return jsonify({r["month"]: r["n"] for r in rows})
 
 
@@ -457,7 +509,6 @@ def get_month(month):
     c        = get_user_db()
     first    = get_first_month(c)
     is_first = (first is None or month == first)
-    c.close()
     return jsonify({"month": month, "is_first_month": is_first})
 
 
@@ -475,7 +526,6 @@ def update_month_bf(month):
         "bf_actual=excluded.bf_actual,bf_reconciled=excluded.bf_reconciled",
         (month, bfe, bfa, bfr))
     c.commit()
-    c.close()
     return jsonify({"month": month, "bf_estimated": bfe, "bf_actual": bfa, "bf_reconciled": bfr})
 
 
@@ -497,7 +547,6 @@ def month_balances(month):
             f"SELECT entry_type,amount,status FROM transactions WHERE month=? AND account_id IN ({placeholders})",
             (month, *account_ids)
         ).fetchall()
-    c.close()
     s = lambda r: signed(r["entry_type"], r["amount"])
     return jsonify({
         "bf_est":         bf_est,
@@ -507,6 +556,62 @@ def month_balances(month):
         "actual":         round(bf_act + sum(s(r) for r in rows if r["status"] in ("actual", "reconciled")), 2),
         "reconciled":     round(bf_rec + sum(s(r) for r in rows if r["status"] == "reconciled"), 2),
         "is_first_month": is_first,
+    })
+
+
+@app.route("/api/months/<month>/totals")
+@require_auth
+def month_totals(month):
+    """Return income/expense/transfer/net totals for a month, transfer-aware.
+
+    ?account_ids=1,2  – filter to these accounts
+    ?multi_account=true – separates transfers into their own bucket (multi-account mode)
+    """
+    c           = get_user_db()
+    account_ids = parse_account_ids_arg(request.args)
+    multi       = request.args.get("multi_account", "false").lower() in ("true", "1", "yes")
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"{TXN_SELECT} WHERE t.month=? AND "
+            f"(t.account_id IN ({placeholders}) OR t.transfer_account_id IN ({placeholders}))",
+            (month, *account_ids, *account_ids),
+        ).fetchall()
+    else:
+        rows = c.execute(f"{TXN_SELECT} WHERE t.month=?", (month,)).fetchall()
+    collapsed = collapse_transfer_rows([D(r) for r in rows], account_ids)
+
+    income_total = expense_total = transfer_total = 0.0
+    net_est = net_act = net_rec = 0.0
+
+    for row in collapsed:
+        amount  = float(row["amount"] or 0)
+        et      = row["entry_type"]
+        status  = row["status"]
+        sign    = 1 if et == "credit" else -1
+        is_xfer = bool(row.get("transfer_group_id"))
+
+        if is_xfer and multi:
+            transfer_total = round(transfer_total + amount, 2)
+        else:
+            if et == "credit":
+                income_total = round(income_total + amount, 2)
+            else:
+                expense_total = round(expense_total + amount, 2)
+            effective = sign * amount
+            net_est = round(net_est + effective, 2)
+            if status in ("actual", "reconciled"):
+                net_act = round(net_act + effective, 2)
+            if status == "reconciled":
+                net_rec = round(net_rec + effective, 2)
+
+    return jsonify({
+        "income_total":   income_total,
+        "expense_total":  expense_total,
+        "transfer_total": transfer_total,
+        "net_est":        net_est,
+        "net_act":        net_act,
+        "net_rec":        net_rec,
     })
 
 
@@ -533,7 +638,6 @@ def global_balances():
             f"SELECT entry_type,amount,status FROM transactions WHERE date IS NOT NULL AND date<=? AND account_id IN ({placeholders})",
             (date.today().isoformat(), *account_ids)
         ).fetchall()
-    c.close()
     s = lambda r: signed(r["entry_type"], r["amount"])
     return jsonify({
         "estimated":  round(bf_est + sum(s(r) for r in rows), 2),
@@ -547,7 +651,6 @@ def global_balances():
 def app_meta():
     c              = get_user_db()
     schema_version = int(c.execute("PRAGMA user_version").fetchone()[0] or 0)
-    c.close()
     return jsonify({
         "app_version":       APP_VERSION,
         "db_schema_version": schema_version,
@@ -561,13 +664,26 @@ def app_meta():
 @app.route("/api/months/<month>/transactions")
 @require_auth
 def list_txns(month):
-    c    = get_user_db()
-    rows = c.execute(
-        f"{TXN_SELECT} WHERE t.month=? ORDER BY t.is_adhoc,t.entry_type DESC,t.sort_order,t.id",
-        (month,)
-    ).fetchall()
-    c.close()
-    return jsonify([D(r) for r in rows])
+    c           = get_user_db()
+    account_ids = parse_account_ids_arg(request.args)
+    collapse    = request.args.get("collapse", "").lower() in ("true", "1", "yes")
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"{TXN_SELECT} WHERE t.month=? AND "
+            f"(t.account_id IN ({placeholders}) OR t.transfer_account_id IN ({placeholders})) "
+            f"ORDER BY t.is_adhoc,t.entry_type DESC,t.sort_order,t.id",
+            (month, *account_ids, *account_ids),
+        ).fetchall()
+    else:
+        rows = c.execute(
+            f"{TXN_SELECT} WHERE t.month=? ORDER BY t.is_adhoc,t.entry_type DESC,t.sort_order,t.id",
+            (month,),
+        ).fetchall()
+    result = [D(r) for r in rows]
+    if collapse:
+        result = collapse_transfer_rows(result, account_ids)
+    return jsonify(result)
 
 
 @app.route("/api/months/<month>/transactions", methods=["POST"])
@@ -619,7 +735,6 @@ def update_txn(tid):
     c = get_user_db()
     txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
     if not txn:
-        c.close()
         return jsonify({"error": "not found"}), 404
 
     # Handle transfer_account_id changes (plain↔transfer conversion)
@@ -708,13 +823,24 @@ def update_txn(tid):
 @app.route("/api/transactions/all")
 @require_auth
 def list_all_txns():
-    """Return every transaction across all months, ordered by date."""
-    c = get_user_db()
-    rows = c.execute(
-        f"{TXN_SELECT} ORDER BY t.date,t.id"
-    ).fetchall()
-    c.close()
-    return jsonify([D(r) for r in rows])
+    """Return transactions across all months, ordered by date."""
+    c           = get_user_db()
+    account_ids = parse_account_ids_arg(request.args)
+    collapse    = request.args.get("collapse", "").lower() in ("true", "1", "yes")
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"{TXN_SELECT} WHERE "
+            f"(t.account_id IN ({placeholders}) OR t.transfer_account_id IN ({placeholders})) "
+            f"ORDER BY t.date,t.id",
+            (*account_ids, *account_ids),
+        ).fetchall()
+    else:
+        rows = c.execute(f"{TXN_SELECT} ORDER BY t.date,t.id").fetchall()
+    result = [D(r) for r in rows]
+    if collapse:
+        result = collapse_transfer_rows(result, account_ids)
+    return jsonify(result)
 
 
 @app.route("/api/transactions", methods=["POST"])
@@ -768,7 +894,6 @@ def del_txn(tid):
     c = get_user_db()
     txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
     if not txn:
-        c.close()
         return jsonify({"deleted": tid})
     if txn["transfer_group_id"]:
         c.execute("DELETE FROM transactions WHERE transfer_group_id=?", (txn["transfer_group_id"],))
@@ -776,7 +901,6 @@ def del_txn(tid):
         c.execute("DELETE FROM transactions WHERE id=?", (tid,))
     _prune_orphan_payees(c)
     c.commit()
-    c.close()
     return jsonify({"deleted": tid})
 
 
@@ -786,7 +910,6 @@ def push_to_template(tid):
     c   = get_user_db()
     txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
     if not txn:
-        c.close()
         return jsonify({"error": "not found"}), 404
     if txn["transfer_group_id"]:
         if txn["transfer_role"] == "destination":
@@ -826,7 +949,6 @@ def push_to_template(tid):
         rid = cur.lastrowid
     c.commit()
     result = D(c.execute("SELECT * FROM templates WHERE id=?", (rid,)).fetchone())
-    c.close()
     return jsonify(result)
 
 
@@ -879,7 +1001,6 @@ def init_month(month):
                              int(tmpl["is_automatic"]), tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c))))
     c.commit()
     n = c.execute("SELECT COUNT(*) n FROM transactions WHERE month=?", (month,)).fetchone()["n"]
-    c.close()
     return jsonify({"count": n, "month": month, "mode": mode})
 
 
@@ -901,7 +1022,6 @@ def daily_balances(month):
             f"WHERE month=? AND date IS NOT NULL AND account_id IN ({placeholders}) ORDER BY date,id",
             (month, *account_ids)
         ).fetchall()
-    c.close()
     year, mo = int(month[:4]), int(month[5:])
     last  = calendar.monthrange(year, mo)[1]
     today = date.today().isoformat()
@@ -959,7 +1079,6 @@ def sync_templates(month):
                      txn["is_automatic"], txn["notes"], (i + 1) * 10, account_id, transfer_account_id))
             updated += 1
     c.commit()
-    c.close()
     return jsonify({"synced": updated})
 
 
@@ -968,9 +1087,18 @@ def sync_templates(month):
 @app.route("/api/templates")
 @require_auth
 def list_templates():
-    c    = get_user_db()
-    rows = c.execute("SELECT * FROM templates ORDER BY entry_type DESC,sort_order,id").fetchall()
-    c.close()
+    c           = get_user_db()
+    account_ids = parse_account_ids_arg(request.args)
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = c.execute(
+            f"SELECT * FROM templates WHERE "
+            f"(account_id IN ({placeholders}) OR transfer_account_id IN ({placeholders})) "
+            f"ORDER BY entry_type DESC,sort_order,id",
+            (*account_ids, *account_ids),
+        ).fetchall()
+    else:
+        rows = c.execute("SELECT * FROM templates ORDER BY entry_type DESC,sort_order,id").fetchall()
     return jsonify([D(r) for r in rows])
 
 
@@ -1015,7 +1143,6 @@ def update_template(tid):
             v = int(v) if v not in (None, "", "null") else None
         vals.append(v)
     if not fields:
-        c.close()
         return jsonify({"error": "no fields"}), 400
     vals.append(tid)
     c.execute(f"UPDATE templates SET {','.join(fields)} WHERE id=?", vals)
@@ -1031,7 +1158,6 @@ def del_template(tid):
     c.execute("DELETE FROM templates WHERE id=?", (tid,))
     _prune_orphan_payees(c)
     c.commit()
-    c.close()
     return jsonify({"deleted": tid})
 
 
@@ -1040,7 +1166,6 @@ def del_template(tid):
 def list_accounts():
     c = get_user_db()
     rows = c.execute("SELECT id,name,type,created_at FROM accounts ORDER BY id").fetchall()
-    c.close()
     return jsonify([D(r) for r in rows])
 
 
@@ -1057,10 +1182,8 @@ def create_account():
         cur = c.execute("INSERT INTO accounts(name,type) VALUES(?,?)", (name, acc_type))
         c.commit()
     except sqlite3.IntegrityError:
-        c.close()
         return jsonify({"error": "account name already exists"}), 400
     row = c.execute("SELECT id,name,type,created_at FROM accounts WHERE id=?", (cur.lastrowid,)).fetchone()
-    c.close()
     return jsonify(D(row)), 201
 
 
@@ -1086,10 +1209,8 @@ def update_account(aid):
         c.execute(f"UPDATE accounts SET {','.join(fields)} WHERE id=?", vals)
         c.commit()
     except sqlite3.IntegrityError:
-        c.close()
         return jsonify({"error": "account name already exists"}), 400
     row = c.execute("SELECT id,name,type,created_at FROM accounts WHERE id=?", (aid,)).fetchone()
-    c.close()
     if not row:
         return jsonify({"error": "not found"}), 404
     return jsonify(D(row))
@@ -1100,15 +1221,12 @@ def update_account(aid):
 def delete_account(aid):
     c = get_user_db()
     if aid == default_account_id(c):
-        c.close()
         return jsonify({"error": "cannot delete default account"}), 400
     ref = c.execute("SELECT COUNT(*) AS n FROM transactions WHERE account_id=? OR transfer_account_id=?", (aid, aid)).fetchone()
     if ref and ref["n"]:
-        c.close()
         return jsonify({"error": "account is in use"}), 400
     c.execute("DELETE FROM accounts WHERE id=?", (aid,))
     c.commit()
-    c.close()
     return jsonify({"deleted": aid})
 
 
@@ -1121,7 +1239,6 @@ def list_categories():
     rows = c.execute("""SELECT DISTINCT category FROM (
         SELECT category FROM transactions WHERE category!=''
         UNION SELECT category FROM templates WHERE category!='') ORDER BY category""").fetchall()
-    c.close()
     return jsonify([r["category"] for r in rows])
 
 
@@ -1141,7 +1258,6 @@ def _prune_orphan_payees(c):
 def list_payees():
     c = get_user_db()
     rows = c.execute("SELECT id, name, category, subcategory FROM payees ORDER BY name").fetchall()
-    c.close()
     return jsonify([D(r) for r in rows])
 
 
@@ -1159,10 +1275,8 @@ def create_payee():
         cur = c.execute("INSERT INTO payees(name, category, subcategory) VALUES(?, ?, ?)", (name, category, subcategory))
         c.commit()
     except Exception as e:
-        c.close()
         return jsonify({"error": str(e)}), 400
     row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (cur.lastrowid,)).fetchone()
-    c.close()
     return jsonify(D(row)), 201
 
 
@@ -1173,7 +1287,6 @@ def update_payee(pid):
     c = get_user_db()
     old = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
     if not old:
-        c.close()
         return jsonify({"error": "not found"}), 404
     old_name = old["name"]
     new_name = d.get("name", old_name).strip() or old_name
@@ -1186,10 +1299,8 @@ def update_payee(pid):
             c.execute("UPDATE templates SET payee=? WHERE payee=?", (new_name, old_name))
         c.commit()
     except Exception as e:
-        c.close()
         return jsonify({"error": str(e)}), 400
     row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
-    c.close()
     return jsonify(D(row))
 
 
@@ -1199,7 +1310,6 @@ def delete_payee(pid):
     c = get_user_db()
     c.execute("DELETE FROM payees WHERE id=?", (pid,))
     c.commit()
-    c.close()
     return jsonify({"deleted": pid})
 
 
