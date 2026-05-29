@@ -341,14 +341,25 @@ function syncAccountColumns(){
   document.body.classList.toggle('show-account-cols', showAccountColumns());
 }
 
-function isSelectedAccount(txn){
-  if(selectedAccountIds === null) return true;
-  if(selectedAccountIds.size === 0) return false;
-  return selectedAccountIds.has(String(txn?.account_id ?? '')) || selectedAccountIds.has(String(txn?.transfer_account_id ?? ''));
+function calculateTransferAwareTotals(rows){
+  let net = 0;
+  let incTotal = 0;
+  let expTotal = 0;
+  for(const row of (rows || [])){
+    const sign = row.entry_type === 'credit' ? 1 : -1;
+    const amount = parseFloat(row.amount || 0);
+    net += sign * amount;
+    if(row.entry_type === 'credit') incTotal += amount;
+    else expTotal += amount;
+    if(row.transfer_account_id && hasSelectedAccount(row.account_id) && hasSelectedAccount(row.transfer_account_id)){
+      net -= sign * amount;
+    }
+  }
+  return {net, incTotal, expTotal};
 }
 
-function getVisibleTransactions(rows){
-  return (rows || []).filter(isSelectedAccount);
+function getVisibleTxnRows(rows){
+  return rows || [];
 }
 
 function accountScopeQuery(){
@@ -356,6 +367,46 @@ function accountScopeQuery(){
   const ids = getSelectedAccountIds();
   if(!ids.length || ids.length === accounts.length) return '';
   return `?account_ids=${encodeURIComponent(ids.join(','))}`;
+}
+
+function txnFetchQuery(){
+  const parts = ['collapse=true'];
+  if(selectedAccountIds !== null && selectedAccountIds.size === 0){
+    parts.push('account_ids=0');
+  } else {
+    const ids = getSelectedAccountIds();
+    if(ids.length && ids.length !== accounts.length){
+      parts.push(`account_ids=${encodeURIComponent(ids.join(','))}`);
+    }
+  }
+  return '?' + parts.join('&');
+}
+
+function totalsFetchQuery(){
+  const p = new URLSearchParams();
+  p.set('multi_account', showAccountColumns() ? 'true' : 'false');
+  if(selectedAccountIds !== null && selectedAccountIds.size === 0){
+    p.set('account_ids', '0');
+  } else {
+    const ids = getSelectedAccountIds();
+    if(ids.length && ids.length !== accounts.length){
+      p.set('account_ids', ids.join(','));
+    }
+  }
+  return '?' + p.toString();
+}
+
+let currentTotals = null;
+
+function applyTotalsToDOM(totals){
+  if(!totals) return;
+  const el = id => document.getElementById(id);
+  if(el('income-sum'))   el('income-sum').textContent   = fmt(totals.income_total);
+  if(el('expense-sum'))  el('expense-sum').textContent  = fmt(totals.expense_total);
+  const tEl = el('transfer-sum');
+  if(tEl) tEl.textContent = totals.transfer_total ? fmt(totals.transfer_total) : '';
+  [['bs-net-est', totals.net_est], ['bs-net-act', totals.net_act], ['bs-net-rec', totals.net_rec]]
+    .forEach(([id, v]) => { const e = el(id); if(e) e.innerHTML = fmtBs(v); });
 }
 
 function refreshAccountSelector(){
@@ -368,15 +419,18 @@ function refreshAccountSelector(){
   updateMonthlyAccountLabel();
 }
 
+function isViewActive(v){
+  return !!document.getElementById(`view-${v}`)?.classList.contains('active');
+}
+
 function setSelectedAccount(accountId){
   selectedAccountIds = normalizeSelectedAccounts(accountId == null ? null : [accountId]);
   const saved = selectedAccountIds === null ? '__all__' : [...selectedAccountIds].join(',');
   localStorage.setItem('ft-selected-accounts', saved);
   refreshAccountSelector();
-  if(transactions.length) computePayeeBadges();
-  if(allTransactions.length) computeAllPayeeBadges();
-  renderTransactions();
-  renderAllTransactions();
+  if(isViewActive('monthly')) loadMonth(currentMonth);
+  else if(isViewActive('all')) loadAllTransactions();
+  loadGlobalBalance();
   refreshBalances();
   renderAllChart();
 }
@@ -471,11 +525,10 @@ function setSelectedAccounts(accountIds){
   const saved = selectedAccountIds === null ? '__all__' : selectedAccountIds.size === 0 ? '__none__' : [...selectedAccountIds].join(',');
   localStorage.setItem('ft-selected-accounts', saved);
   refreshAccountSelector();
-  if(transactions.length) computePayeeBadges();
-  if(allTransactions.length) computeAllPayeeBadges();
-  renderTransactions();
-  renderAllTransactions();
-  if(document.getElementById('view-template')?.classList.contains('active')) renderTemplates();
+  if(isViewActive('monthly')) loadMonth(currentMonth);
+  else if(isViewActive('all')) loadAllTransactions();
+  if(isViewActive('template')) loadTemplates();
+  loadGlobalBalance();
   refreshBalances();
   renderAllChart();
 }
@@ -649,42 +702,6 @@ function getTxnDisplayPayee(txn){
   return getAccountName(txn.transfer_account_id) || txn.transfer_account_name || txn.display_payee || txn.payee || '';
 }
 
-function isTransferSource(txn){
-  return !!txn && !!txn.transfer_group_id && txn.transfer_role === 'source';
-}
-
-function collapseTransferRows(rows){
-  if(!Array.isArray(rows) || rows.length===0) return [];
-  const rowsByGroup = new Map();
-  for(const row of rows){
-    if(!row.transfer_group_id) continue;
-    if(!rowsByGroup.has(row.transfer_group_id)) rowsByGroup.set(row.transfer_group_id, []);
-    rowsByGroup.get(row.transfer_group_id).push(row);
-  }
-  const seen = new Set();
-  const result = [];
-  for(const row of rows){
-    if(!row.transfer_group_id){
-      result.push(row);
-      continue;
-    }
-    const groupRows = rowsByGroup.get(row.transfer_group_id) || [row];
-    let chosen = null;
-    const selectedIds = getSelectedAccountIds();
-    if(selectedIds.length !== accounts.length){
-      const selected = new Set(selectedIds.map(String));
-      chosen = groupRows.find(r=>selected.has(String(r.account_id ?? '')))
-        || groupRows.find(r=>selected.has(String(r.transfer_account_id ?? '')));
-    }
-    if(!chosen) chosen = groupRows.find(isTransferSource) || groupRows[0] || row;
-    if(row.id !== chosen.id) continue;
-    if(seen.has(row.transfer_group_id)) continue;
-    seen.add(row.transfer_group_id);
-    result.push({...chosen, display_payee:getTxnDisplayPayee(chosen), is_transfer_display:true});
-  }
-  return result;
-}
-
 // ═══════════ CUSTOM AUTOCOMPLETE ═══════════
 let _acDrop=null, _acOnPick=null, _acActiveIdx=-1;
 let _acInput=null, _acScrollCleanup=null;
@@ -852,12 +869,10 @@ function setSort(bodyId, col){
   // Re-render relevant section
   if(bodyId==='income-body'||bodyId==='expense-body'||bodyId==='transfer-body') renderTransactions();
   else if(bodyId==='tmpl-income-body') {
-    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id)));
-    renderTmplSection('tmpl-income-body', visibleTemplates.filter(t=>t.entry_type==='credit'));
+    renderTmplSection('tmpl-income-body', templates.filter(t=>t.entry_type==='credit'));
   }
   else if(bodyId==='tmpl-expense-body') {
-    const visibleTemplates = templates.filter(t=>hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id)));
-    renderTmplSection('tmpl-expense-body', visibleTemplates.filter(t=>t.entry_type==='debit'));
+    renderTmplSection('tmpl-expense-body', templates.filter(t=>t.entry_type==='debit'));
   }
   else if(bodyId==='all-body') renderAllTransactions();
 }
@@ -1014,12 +1029,14 @@ async function loadMonth(month){
   resetSortState(['income-body','expense-body','transfer-body'],'date');
   buildCarousel();
   const scoped=accountScopeQuery();
-  const[mData,txns,bals]=await Promise.all([
+  const[mData,txns,bals,totals]=await Promise.all([
     fetch(`/api/months/${month}`).then(r=>r.json()),
-    fetch(`/api/months/${month}/transactions`).then(r=>r.json()),
+    fetch(`/api/months/${month}/transactions${txnFetchQuery()}`).then(r=>r.json()),
     fetch(`/api/months/${month}/balances${scoped}`).then(r=>r.json()),
+    fetch(`/api/months/${month}/totals${totalsFetchQuery()}`).then(r=>r.json()),
   ]);
   transactions=txns;
+  currentTotals=totals;
   transactions.forEach(t=>{ if(t.category) addCat(t.category); if(t.payee) addPayee(t.payee); });
   computePayeeBadges();
   renderBalanceSummary(bals);
@@ -1029,8 +1046,12 @@ async function loadMonth(month){
 
 async function refreshBalances(){
   const scoped=accountScopeQuery();
-  const bals=await fetch(`/api/months/${currentMonth}/balances${scoped}`).then(r=>r.json());
+  const[bals,totals]=await Promise.all([
+    fetch(`/api/months/${currentMonth}/balances${scoped}`).then(r=>r.json()),
+    fetch(`/api/months/${currentMonth}/totals${totalsFetchQuery()}`).then(r=>r.json()),
+  ]);
   renderBalanceSummary(bals);
+  currentTotals=totals;
   updateSums();
   loadGlobalBalance();
   loadChart(currentMonth);
@@ -1390,7 +1411,7 @@ function renderAllChart(){
   const canvas = document.getElementById('all-bal-chart');
   if(!canvas) return;
 
-  const accountRows = getVisibleTransactions(collapseTransferRows(allTransactions));
+  const accountRows = allTransactions;
   const sourceRows = allChartScope === 'filtered'
     ? applyAllFilters(accountRows)
     : accountRows;
@@ -1520,7 +1541,7 @@ function renderAllChart(){
 // ═══════════ PAYEE BADGES ═══════════
 function computePayeeBadges(){
   payeeBadges={};
-  const sorted=[...getVisibleTransactions(collapseTransferRows(transactions))].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
+  const sorted=[...getVisibleTxnRows(transactions)].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
   const seen={};
   for(const t of sorted){
     const k=`${getTxnDisplayPayee(t)}|${t.entry_type}`; seen[k]=(seen[k]||0)+1; payeeBadges[t.id]=seen[k];
@@ -1959,30 +1980,12 @@ function makeStatusCell(txn){
 
 // ═══════════ RENDER TRANSACTIONS ═══════════
 function updateSums(){
-  const visible=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>!t.transfer_group_id);
-  const inc=visible.filter(t=>t.entry_type==='credit');
-  const exp=visible.filter(t=>t.entry_type==='debit');
-  const s=arr=>arr.reduce((acc,t)=>acc+(t.entry_type==='credit'?t.amount:-t.amount),0);
-  const incTotal=s(inc), expTotal=s(exp);
-  document.getElementById('income-sum').textContent=fmt(incTotal);
-  document.getElementById('expense-sum').textContent=fmt(-expTotal);
-  const txferRows=getVisibleTransactions(collapseTransferRows(transactions)).filter(t=>t.transfer_group_id);
-  const txferTotal=txferRows.reduce((acc,t)=>acc+parseFloat(t.amount||0),0);
-  const tSumEl=document.getElementById('transfer-sum');
-  if(tSumEl) tSumEl.textContent=txferTotal?fmt(txferTotal):'';
-  // Net row in balance summary — broken out by status, filtered to visible accounts
-  const sa=t=>t.entry_type==='credit'?t.amount:-t.amount;
-  const visibleNet=getVisibleTransactions(collapseTransferRows(transactions));
-  const netEst=visibleNet.reduce((acc,t)=>acc+sa(t),0);
-  const netAct=visibleNet.filter(t=>['actual','reconciled'].includes(t.status)).reduce((acc,t)=>acc+sa(t),0);
-  const netRec=visibleNet.filter(t=>t.status==='reconciled').reduce((acc,t)=>acc+sa(t),0);
-  [['bs-net-est',netEst],['bs-net-act',netAct],['bs-net-rec',netRec]]
-    .forEach(([id,v])=>{ const el=document.getElementById(id); if(el) el.innerHTML=fmtBs(v); });
+  applyTotalsToDOM(currentTotals);
 }
 function renderTransactions(){
   syncAccountColumns();
   const multiAccount=showAccountColumns();
-  const visible=getVisibleTransactions(collapseTransferRows(transactions));
+  const visible=getVisibleTxnRows(transactions);
   const txfers=multiAccount?visible.filter(t=>t.transfer_group_id):[];
   const nonTxfers=multiAccount?visible.filter(t=>!t.transfer_group_id):visible;
   renderSection('income-body',   nonTxfers.filter(t=>t.entry_type==='credit'));
@@ -2024,7 +2027,7 @@ async function updateField(id, field, value){
   const data=await fetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
   if(txn.transfer_group_id || field==='transfer_account_id'){
-    transactions=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
+    transactions=await fetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
   }else{
     const i=transactions.findIndex(t=>t.id===id);
     if(i!==-1) transactions[i]={...transactions[i],...data};
@@ -2044,7 +2047,7 @@ async function updatePayeeAndTransfer(id, payee, transferAccountId){
   const patch={payee,transfer_account_id:transferAccountId};
   await fetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  transactions=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
+  transactions=await fetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
   computePayeeBadges();
   if(!hasActiveEditor()) renderTransactions();
   else updateSums();
@@ -2068,7 +2071,7 @@ async function delTxn(id){
 
 async function doPushToTemplate(txnId){
   await fetch(`/api/transactions/${txnId}/to-template`,{method:'POST'});
-  templates=await fetch('/api/templates').then(r=>r.json());
+  templates=await fetch(`/api/templates${accountScopeQuery()}`).then(r=>r.json());
   templates.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computeTmplBadges(); renderTransactions();
   toast('Pushed to Template Builder');
@@ -2090,7 +2093,7 @@ async function doInit(mode){
   const data=await fetch(`/api/months/${currentMonth}/init`,
     {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})}).then(r=>r.json());
   toast(`Initialized: ${data.count} transactions (${mode==='replace_all'?'replaced all':'merged'})`);
-  const txns=await fetch(`/api/months/${currentMonth}/transactions`).then(r=>r.json());
+  const txns=await fetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
   transactions=txns;
   transactions.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computePayeeBadges(); renderTransactions(); refreshBalances();
@@ -2184,39 +2187,13 @@ async function deletePayee(id){
 async function loadTemplates(){
   // Reset template sort state on each view open
   resetSortState(['tmpl-income-body','tmpl-expense-body'],'day_of_month');
-  templates=await fetch('/api/templates').then(r=>r.json());
+  templates=await fetch(`/api/templates${accountScopeQuery()}`).then(r=>r.json());
   templates.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computeTmplBadges(); renderTemplates();
   syncTemplateGhostAccountSelectors();
 }
-function updateTmplNet(visibleTemplates){
-  const rows = visibleTemplates || templates;
-  let net = 0;
-  let incTotal = 0;
-  let expTotal = 0;
-  
-  rows.forEach(t => {
-    const sign = t.entry_type === 'credit' ? 1 : -1;
-    const amount = parseFloat(t.amount || 0);
-    
-    // Count from the main account
-    net += sign * amount;
-    if (t.entry_type === 'credit') incTotal += amount;
-    else expTotal += amount;
-    
-    // If this is a transfer template and both accounts are selected, also count from transfer account perspective
-    if (t.transfer_account_id && hasSelectedAccount(t.account_id) && hasSelectedAccount(t.transfer_account_id)) {
-      // From transfer account's perspective, the entry_type is opposite
-      const oppositeSign = -sign;
-      net += oppositeSign * amount;
-      if (t.entry_type === 'credit') {
-        expTotal += amount;
-      } else {
-        incTotal += amount;
-      }
-    }
-  });
-  
+function updateTmplNet(){
+  const {net, incTotal, expTotal} = calculateTransferAwareTotals(templates);
   const netEl = document.getElementById('template-net');
   if(netEl) netEl.innerHTML = fmtBal(net);
   const incEl = document.getElementById('tmpl-income-sum');
@@ -2225,12 +2202,9 @@ function updateTmplNet(visibleTemplates){
   if(expEl) expEl.textContent = expTotal ? fmt(-expTotal) : '';
 }
 function renderTemplates(){
-  const visibleTemplates = templates.filter(t=>{
-    return hasSelectedAccount(t.account_id) || (t.transfer_account_id && hasSelectedAccount(t.transfer_account_id));
-  });
-  renderTmplSection('tmpl-income-body', visibleTemplates.filter(t=>t.entry_type==='credit'));
-  renderTmplSection('tmpl-expense-body',visibleTemplates.filter(t=>t.entry_type==='debit'));
-  updateTmplNet(visibleTemplates);
+  renderTmplSection('tmpl-income-body', templates.filter(t=>t.entry_type==='credit'));
+  renderTmplSection('tmpl-expense-body', templates.filter(t=>t.entry_type==='debit'));
+  updateTmplNet();
 }
 function getTemplateAccountOptions(){
   return accounts.map(acc=>({label: acc.name || `Account ${acc.id}`, value: String(acc.id)}));
@@ -2488,7 +2462,7 @@ function computeAllPayeeBadges(){
   allPayeeBadges={};
   // Badge ordering is per-month, matching the monthly view's behaviour
   const byMonth={};
-  for(const t of getVisibleTransactions(collapseTransferRows(allTransactions))){(byMonth[t.month||'']||=[]).push(t);}
+  for(const t of getVisibleTxnRows(allTransactions)){(byMonth[t.month||'']||=[]).push(t);}
   for(const txns of Object.values(byMonth)){
     const sorted=[...txns].sort((a,b)=>(a.date||'9').localeCompare(b.date||'9')||a.id-b.id);
     const seen={};
@@ -2709,7 +2683,7 @@ function renderAllBody(rows){
 
 function renderAllTransactions(){
   syncAccountColumns();
-  const visible=getVisibleTransactions(collapseTransferRows(allTransactions));
+  const visible=getVisibleTxnRows(allTransactions);
   const filtered=applyAllFilters(visible);
   renderAllBody(filtered);
   updateAllFilterBadge();
@@ -2726,7 +2700,7 @@ async function updateAllField(id,field,value){
   const data=await resilientApiFetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
   if(txn.transfer_group_id||field==='transfer_account_id'){
-    allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
+    allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
   }else{
     const i=allTransactions.findIndex(t=>t.id===id);
     if(i!==-1) allTransactions[i]={...allTransactions[i],...data};
@@ -2744,7 +2718,7 @@ async function updateAllPayeeAndTransfer(id,payee,transferAccountId){
   const patch={payee,transfer_account_id:transferAccountId};
   await resilientApiFetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
-  allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
+  allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
   computeAllPayeeBadges();
   if(!hasActiveEditor()) renderAllTransactions();
   refreshSuggestions();
@@ -2765,7 +2739,7 @@ async function delAllTxn(id){
 
 async function doPushToTemplateAll(txnId){
   await resilientApiFetch(`/api/transactions/${txnId}/to-template`,{method:'POST'});
-  templates=await resilientApiFetch('/api/templates').then(r=>r.json());
+  templates=await resilientApiFetch(`/api/templates${accountScopeQuery()}`).then(r=>r.json());
   templates.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computeTmplBadges();computeAllPayeeBadges();renderAllTransactions();
   toast('Pushed to Template Builder');
@@ -2820,7 +2794,7 @@ function updateResultCount(total,shown){
 }
 
 function exportAllCSV(){
-  const rows = applyAllFilters(getVisibleTransactions(collapseTransferRows(allTransactions)));
+  const rows = applyAllFilters(getVisibleTxnRows(allTransactions));
   const cols = [
     {key:'date',       label:'Date'},
     {key:'entry_type', label:'Type',     fmt:v=>v==='credit'?'Income':'Expense'},
@@ -2953,7 +2927,7 @@ function clearAllFilters(){
 
 async function loadAllTransactions(){
   resetSortState(['all-body'],'date');
-  allTransactions=await resilientApiFetch('/api/transactions/all').then(r=>r.json());
+  allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
   allTransactions.forEach(t=>{if(t.category)addCat(t.category);if(t.payee)addPayee(t.payee);});
   computeAllPayeeBadges();renderAllTransactions();
 }
