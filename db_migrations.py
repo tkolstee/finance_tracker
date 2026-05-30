@@ -1,6 +1,6 @@
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -158,6 +158,23 @@ def migrate_7_add_payee_subcategory(connection: sqlite3.Connection) -> None:
         )
 
 
+def migrate_8_add_txn_subcategory(connection: sqlite3.Connection) -> None:
+    if not _column_exists(connection, "transactions", "subcategory"):
+        connection.execute(
+            "ALTER TABLE transactions ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''"
+        )
+    # Migrate existing "category:subcategory" combined strings written by old payee auto-fill
+    rows = connection.execute(
+        "SELECT id, category FROM transactions WHERE category LIKE '%:%'"
+    ).fetchall()
+    for row in rows:
+        parts = row["category"].split(":", 1)
+        connection.execute(
+            "UPDATE transactions SET category=?, subcategory=? WHERE id=?",
+            (parts[0].strip(), parts[1].strip(), row["id"])
+        )
+
+
 MIGRATIONS = (
     (1, migrate_1_create_core_schema),
     (2, migrate_2_add_month_balance_columns),
@@ -166,6 +183,7 @@ MIGRATIONS = (
     (5, migrate_5_add_template_transfer_account_id),
     (6, migrate_6_add_payees_table),
     (7, migrate_7_add_payee_subcategory),
+    (8, migrate_8_add_txn_subcategory),
 )
 
 
