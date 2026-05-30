@@ -239,11 +239,8 @@ function updateSubcatDL(mainCat){
   [...new Set(payeesList.filter(p=>(p.category||'')===mainCat&&p.subcategory).map(p=>p.subcategory))].sort()
     .forEach(s=>{const o=document.createElement('option');o.value=s;dl.appendChild(o);});
 }
-function onPayeeCategoryInput(){
-  const el=document.getElementById('payee-form-category'); if(!el) return;
-  updateSubcatDL(el.value.trim());
-}
 function fmtCat(p){ return p.subcategory?(p.category||'')+':'+p.subcategory:(p.category||''); }
+function formatCatDisplay(cat, sub){ return cat ? (sub ? `${cat} · ${sub}` : cat) : ''; }
 function addCat(c){ if(c&&!categories.has(c)){categories.add(c);} }
 function addPayee(p){ if(p&&!payees.has(p)) payees.add(p); }
 
@@ -346,13 +343,28 @@ function calculateTransferAwareTotals(rows){
   let incTotal = 0;
   let expTotal = 0;
   for(const row of (rows || [])){
-    const sign = row.entry_type === 'credit' ? 1 : -1;
     const amount = parseFloat(row.amount || 0);
-    net += sign * amount;
-    if(row.entry_type === 'credit') incTotal += amount;
-    else expTotal += amount;
-    if(row.transfer_account_id && hasSelectedAccount(row.account_id) && hasSelectedAccount(row.transfer_account_id)){
-      net -= sign * amount;
+    if(row.transfer_account_id){
+      const sourceSelected = hasSelectedAccount(row.account_id);
+      const destSelected = hasSelectedAccount(row.transfer_account_id);
+      if(sourceSelected && destSelected){
+        // Both sides visible: internal transfer nets to zero
+      } else if(destSelected && !sourceSelected){
+        // Only destination visible: incoming money is positive
+        net += amount;
+        incTotal += amount;
+      } else {
+        // Only source visible: use stored direction (outgoing is negative for debits)
+        const sign = row.entry_type === 'credit' ? 1 : -1;
+        net += sign * amount;
+        if(row.entry_type === 'credit') incTotal += amount;
+        else expTotal += amount;
+      }
+    } else {
+      const sign = row.entry_type === 'credit' ? 1 : -1;
+      net += sign * amount;
+      if(row.entry_type === 'credit') incTotal += amount;
+      else expTotal += amount;
     }
   }
   return {net, incTotal, expTotal};
@@ -694,7 +706,7 @@ function refreshAccountNameDependentViews(){
   updateMonthlyAccountLabel();
   if(transactions.length) renderTransactions();
   if(allTransactions.length) renderAllTransactions();
-  if(document.getElementById('view-payees')?.classList.contains('active')) renderPayeesView();
+  // payees admin view removed
 }
 
 function getTxnDisplayPayee(txn){
@@ -834,17 +846,41 @@ async function refreshSuggestions(){
 }
 
 function getTxnCategory(txn){
-  const name=txn.payee||'';
-  if(name && Object.prototype.hasOwnProperty.call(payeesMap,name)) return payeesMap[name]||'';
-  return txn.category||'';
+  return formatCatDisplay(txn.category||'', txn.subcategory||'');
+}
+
+function getPayeeCatObj(payee){
+  if(!payee) return {category:'',subcategory:''};
+  if(Object.prototype.hasOwnProperty.call(payeesMap,payee)){
+    const val = payeesMap[payee]||'';
+    const idx = val.indexOf(':');
+    return idx>=0 ? {category:val.slice(0,idx),subcategory:val.slice(idx+1)} : {category:val,subcategory:''};
+  }
+  return {category:'',subcategory:''};
 }
 
 function getPayeeDefaultCategory(payee){
   if(!payee) return null;
-  if(Object.prototype.hasOwnProperty.call(payeesMap,payee)) return payeesMap[payee]||null;
+  const {category,subcategory} = getPayeeCatObj(payee);
+  if(category) return fmtCat({category,subcategory});
   const tmplMatch=templates.filter(t=>t.payee===payee&&t.category).sort((a,b)=>b.id-a.id)[0];
   if(tmplMatch) return tmplMatch.category;
   return null;
+}
+
+function getCategoryHierarchy(){
+  const map = new Map();
+  const add = (cat, sub) => {
+    if(!cat) return;
+    if(!map.has(cat)) map.set(cat, new Set());
+    if(sub) map.get(cat).add(sub);
+  };
+  payeesList.forEach(p => add(p.category||'', p.subcategory||''));
+  (transactions||[]).forEach(t => add(t.category||'', t.subcategory||''));
+  (allTransactions||[]).forEach(t => add(t.category||'', t.subcategory||''));
+  return [...map.entries()]
+    .sort((a,b)=>a[0].localeCompare(b[0]))
+    .map(([cat,subs])=>({category:cat,subcategories:[...subs].sort()}));
 }
 
 // ═══════════ SORT ═══════════
@@ -907,17 +943,14 @@ function showView(v){
   document.getElementById('view-monthly').classList.toggle('active', v==='monthly');
   document.getElementById('view-template').classList.toggle('active', v==='template');
   document.getElementById('view-all').classList.toggle('active', v==='all');
-  document.getElementById('view-payees')?.classList.toggle('active', v==='payees');
   document.getElementById('view-accounts')?.classList.toggle('active', v==='accounts');
   document.getElementById('tab-monthly').classList.toggle('active', v==='monthly');
   document.getElementById('tab-template').classList.toggle('active', v==='template');
   document.getElementById('tab-all').classList.toggle('active', v==='all');
-  document.getElementById('tab-payees')?.classList.toggle('active', v==='payees');
   document.getElementById('tab-accounts')?.classList.toggle('active', v==='accounts');
   if(v==='monthly') renderTransactions();
   if(v==='template') loadTemplates();
   if(v==='all') loadAllTransactions();
-  if(v==='payees') loadPayeesView();
   if(v==='accounts') renderAccountsView();
 }
 
@@ -1681,16 +1714,52 @@ function makePayeeAllSpan(txn,section){
 
 function makeEC(txn, field, type, extraClass, section){
   if(field==='category'){
-    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-derived';
-    const span=document.createElement('span'); span.textContent=getTxnCategory(txn);
-    td.appendChild(span); return td;
+    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-editable';
+    const span=document.createElement('span');
+    span.textContent=getTxnCategory(txn);
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('cat-picker-modal')?.classList.contains('open')) return;
+      openCategoryPicker(txn.id, txn.category||'', txn.subcategory||'', txn.payee||'', 'monthly',
+        (category,subcategory)=>{
+          span.textContent=formatCatDisplay(category,subcategory);
+          updateTxnCategory(txn.id, category, subcategory);
+        });
+    };
+    return td;
+  }
+  if(field==='payee'){
+    const td=document.createElement('td'); td.className='editable '+(extraClass||'');
+    let span;
+    if(section) span=makePayeeSpan(txn,section);
+    else{
+      span=document.createElement('span');
+      span.textContent=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn.payee||'');
+    }
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
+      openPayeePicker(txn.transfer_account_id ? '' : (txn.payee||''), (payeeName, accountId)=>{
+        if(accountId){
+          if(String(accountId)===String(txn.transfer_account_id)) return;
+          if(section){ const s=makePayeeSpan({...txn,transfer_account_id:accountId},section); span.replaceWith(s); }
+          else span.textContent=getAccountName(accountId)||payeeName;
+          updatePayeeAndTransfer(txn.id, payeeName, accountId);
+        } else {
+          if(payeeName===txn.payee && !txn.transfer_account_id) return;
+          if(section){ const s=makePayeeSpan({...txn,payee:payeeName,transfer_account_id:null},section); span.replaceWith(s); }
+          else span.textContent=payeeName;
+          const {category,subcategory}=getPayeeCatObj(payeeName);
+          updatePayeeAndTransfer(txn.id, payeeName, null, category?{category,subcategory}:{});
+        }
+      });
+    };
+    return td;
   }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
-  let span;
-  if(field==='payee'&&section) span=makePayeeSpan(txn,section);
-  else{
-    span=document.createElement('span');
+  const span=document.createElement('span');
+  {
     if(field==='amount'){
       span.innerHTML=fmtTxnAmt(txn.amount, txn.entry_type);
     }else if(field==='entry_type'){
@@ -1792,132 +1861,17 @@ function makeEC(txn, field, type, extraClass, section){
         const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
         if(!payeeChanged&&!transferChanged) return false;
         if(v) addPayee(v);
-        updatePayeeAndTransfer(txn.id, payeeChanged?v:latest.payee, transferChanged?transferAccountId:latest.transfer_account_id);
+        // Auto-apply payee's default category when payee changes
+        const catExtra={};
+        if(payeeChanged && v && !transferAccountId){
+          const {category,subcategory}=getPayeeCatObj(v);
+          if(category){ catExtra.category=category; catExtra.subcategory=subcategory; }
+        }
+        updatePayeeAndTransfer(txn.id, payeeChanged?v:latest.payee,
+          transferChanged?transferAccountId:latest.transfer_account_id, catExtra);
         return true;
       }
       if(valuesEqual(field, latest[field], v)) return false;
-      updateField(txn.id,field,v);
-      return true;
-    };
-    el.onblur=()=>{ _hideAC(); doSave(); closeEditor(); };
-    el.onkeydown=ev=>{
-      if(ev.key==='Escape'){
-        ev.preventDefault();el.onblur=null;_hideAC();closeEditor();
-        return;
-      }
-      if(ev.key==='Tab'){
-        ev.preventDefault();
-        _acPickFromInput(el);
-        makeOnTab(ev.shiftKey);
-        return;
-      }
-      if(ev.key==='Enter'){
-        ev.preventDefault();
-        if(_acDrop && _acPickFromInput(el)){ makeOnTab(false); return; }
-        el.blur();
-      }
-    };
-    e.stopPropagation();
-  };
-  return td;
-}
-
-  function makeAllEC(txn,field,type,extraClass,section){
-    const td=document.createElement('td');
-  td.className='editable '+(extraClass||'');
-  let span;
-  if(field==='payee'&&section) span=makePayeeSpan(txn,section);
-  else{
-    span=document.createElement('span');
-    if(field==='amount'){
-      span.innerHTML=fmtTxnAmt(txn.amount, txn.entry_type);
-    }else if(field==='entry_type'){
-      span.textContent=txn.entry_type==='credit'?'Income':'Expense';
-    }else if(field==='date'){
-      span.textContent=txn.date?String(parseInt(txn.date.slice(8),10)):'';
-    }else{ span.textContent=txn[field]||''; }
-  }
-  td.appendChild(span);
-
-  td.onclick=e=>{
-    if(td.querySelector('input,select')) return;
-    // Mark this row as being edited
-    editingTxnId=txn.id;
-    span.style.display='none';
-    let el;
-
-    const repaintStatic=()=>{
-      const latest=getTxnById(txn.id) || txn;
-      if(field==='payee'&&section){
-        span.replaceWith(makePayeeSpan(latest, section));
-        span = td.querySelector('span');
-      }else if(field==='amount'){
-        span.innerHTML=fmtTxnAmt(latest.amount, latest.entry_type);
-      }else if(field==='entry_type'){
-        span.textContent=latest.entry_type==='credit'?'Income':'Expense';
-      }else if(field==='date'){
-        span.textContent=latest.date?String(parseInt(latest.date.slice(8),10)):'';
-      }else{
-        span.textContent=latest[field]||'';
-      }
-    };
-
-    const closeEditor=()=>{
-      if(el&&el.parentNode===td) el.remove();
-      repaintStatic();
-      span.style.display='';
-      editingTxnId=null;
-    };
-
-    // Helper: build onTab callback for this cell
-    const makeOnTab=(shiftKey)=>{
-      el.onblur=null; _hideAC();
-      doSave();
-      closeEditor();
-      const t=getNextTxnTarget(td,shiftKey);
-      // If next target is the ghost row, let browser Tab move naturally to tfoot inputs
-      if(t && t.type!=='ghost') setTimeout(()=>applyTxnTarget(t),80);
-    };
-
-    if(field==='category'){
-      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>[...categories].sort(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
-    }else if(field==='payee'){
-      el=document.createElement('input'); el.type='text'; el.className='cell-input'; el.value=txn[field]||'';
-      acBind(el, ()=>getPayeeAutocompleteOptions(), opt=>{ el.value=opt?.label||opt||''; }, makeOnTab);
-    }else if(field==='entry_type'){
-      el=document.createElement('select'); el.className='cell-select';
-      ['credit','debit'].forEach(v=>{
-        const o=document.createElement('option'); o.value=v;
-        o.textContent=v==='credit'?'Income':'Expense';
-        if(v===txn[field]) o.selected=true; el.appendChild(o);});
-    }else if(field==='date'){
-      el=document.createElement('input'); el.type='number'; el.className='cell-input';
-      el.style.width='48px'; el.style.textAlign='center';
-      const[yr,mo]=currentMonth.split('-');
-      const lastDay=new Date(+yr,+mo,0).getDate();
-      el.min='1'; el.max=String(lastDay);
-      el.value=txn.date?String(parseInt(txn.date.slice(8),10)):'';
-    }else{
-      el=document.createElement('input'); el.type=type||'text'; el.className='cell-input';
-      el.value=field==='amount'?txn.amount.toFixed(2):(txn[field]||'');
-    }
-    td.appendChild(el); el.focus();
-    if(el.tagName==='INPUT'){try{el.select()}catch(x){}}
-
-    const doSave=()=>{
-      let v=field==='amount'?parseFloat(el.value)||0:el.value;
-      // Reconstruct full YYYY-MM-DD from bare day number entered by user
-      if(field==='date'&&v){
-        const[yr,mo]=currentMonth.split('-');
-        const lastDay=new Date(+yr,+mo,0).getDate();
-        const day=Math.min(Math.max(1,parseInt(v,10)||1),lastDay);
-        v=`${currentMonth}-${String(day).padStart(2,'0')}`;
-      }
-      const latest=getTxnById(txn.id) || txn;
-      if(valuesEqual(field, latest[field], v)) return false;
-      if(field==='category'&&v) addCat(v);
-      if(field==='payee'&&v) addPayee(v);
       updateField(txn.id,field,v);
       return true;
     };
@@ -2039,12 +1993,31 @@ async function updateField(id, field, value){
   refreshSuggestions();
 }
 
-async function updatePayeeAndTransfer(id, payee, transferAccountId){
+async function updateTxnCategory(id, category, subcategory){
+  const txn=getTxnById(id);
+  if(!txn) return;
+  applyLocalTxnField(id,'category',category);
+  applyLocalTxnField(id,'subcategory',subcategory);
+  const data=await resilientApiFetch(`/api/transactions/${id}`,
+    {method:'PUT',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({category,subcategory})}).then(r=>r.json());
+  if(txn.transfer_group_id){
+    transactions=await resilientApiFetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
+  }else{
+    const i=transactions.findIndex(t=>t.id===id);
+    if(i!==-1) transactions[i]={...transactions[i],...data};
+  }
+  if(!hasActiveEditor()) renderTransactions();
+  else updateSums();
+}
+
+async function updatePayeeAndTransfer(id, payee, transferAccountId, extraFields={}){
   const txn=getTxnById(id);
   if(!txn) return;
   applyLocalTxnField(id,'payee',payee);
   applyLocalTxnField(id,'transfer_account_id',transferAccountId);
-  const patch={payee,transfer_account_id:transferAccountId};
+  for(const [k,v] of Object.entries(extraFields)) applyLocalTxnField(id,k,v);
+  const patch={payee,transfer_account_id:transferAccountId,...extraFields};
   await fetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
   transactions=await fetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
@@ -2101,87 +2074,7 @@ async function doInit(mode){
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 
-// ── Payees admin view ─────────────────────────────────────────────────────
-
-async function loadPayeesView(){
-  const data=await resilientApiFetch('/api/payees').then(r=>r.json()).catch(()=>[]);
-  payeesList=data;
-  payeesMap={};
-  data.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
-  updateDL();
-  renderTransactions();
-  renderTemplates();
-  renderPayeesAdmin();
-}
-
-function renderPayeesAdmin(){
-  const tbody=document.getElementById('payees-body');
-  const countEl=document.getElementById('payees-count');
-  if(!tbody) return;
-  tbody.innerHTML='';
-  if(countEl) countEl.textContent=payeesList.length?`(${payeesList.length})`:'';
-  payeesList.forEach(p=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td style="color:var(--mu);font-size:11px">${p.id}</td>
-      <td>${escHtml(p.name)}</td>
-      <td>${escHtml(p.category||'')}</td>
-      <td>${escHtml(p.subcategory||'')}</td>
-      <td style="text-align:right">
-        <button class="btn-ol btn-sm" onclick="editPayeeForm(${p.id})">Edit</button>
-        <button class="del-btn" style="margin-left:4px" onclick="deletePayee(${p.id})" title="Delete"><i class="bi bi-x-lg"></i></button>
-      </td>`;
-    tbody.appendChild(tr);
-  });
-}
-
 function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-
-function editPayeeForm(id){
-  const p=payeesList.find(x=>x.id===id); if(!p) return;
-  document.getElementById('payee-form-id').value=id;
-  document.getElementById('payee-form-name').value=p.name||'';
-  document.getElementById('payee-form-category').value=p.category||'';
-  document.getElementById('payee-form-subcategory').value=p.subcategory||'';
-  updateSubcatDL(p.category||'');
-  document.getElementById('payee-form-name').focus();
-}
-
-function resetPayeeForm(){
-  document.getElementById('payee-form-id').value='';
-  document.getElementById('payee-form-name').value='';
-  document.getElementById('payee-form-category').value='';
-  document.getElementById('payee-form-subcategory').value='';
-  updateSubcatDL('');
-  document.getElementById('payee-form-name').focus();
-}
-
-async function savePayeeForm(){
-  const id=document.getElementById('payee-form-id').value;
-  const name=(document.getElementById('payee-form-name').value||'').trim();
-  const category=(document.getElementById('payee-form-category').value||'').trim();
-  const subcategory=(document.getElementById('payee-form-subcategory').value||'').trim();
-  if(!name){ document.getElementById('payee-form-name').focus(); return; }
-  try{
-    if(id){
-      await resilientApiFetch(`/api/payees/${id}`,
-        {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category,subcategory})}).then(r=>r.json());
-    }else{
-      await resilientApiFetch('/api/payees',
-        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,category,subcategory})}).then(r=>r.json());
-    }
-    await loadPayeesView();
-    resetPayeeForm();
-    toast(id?'Payee updated':'Payee created');
-  }catch(e){ console.error('savePayeeForm',e); }
-}
-
-async function deletePayee(id){
-  if(!confirm('Delete this payee? Existing transactions will keep their payee name but the category association is removed.')) return;
-  await resilientApiFetch(`/api/payees/${id}`,{method:'DELETE'});
-  await loadPayeesView();
-  if(document.getElementById('payee-form-id').value===String(id)) resetPayeeForm();
-  toast('Payee deleted');
-}
 
 // ═══════════ TEMPLATE BUILDER ═══════════
 async function loadTemplates(){
@@ -2491,16 +2384,52 @@ function pushStatusAll(txn){
 // ── Cell builders for all-transactions view ──────────────────────────────────
 function makeAllEC(txn,field,type,extraClass,section){
   if(field==='category'){
-    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-derived';
-    const span=document.createElement('span'); span.textContent=getTxnCategory(txn);
-    td.appendChild(span); return td;
+    const td=document.createElement('td'); td.className=(extraClass||'')+' cat-editable';
+    const span=document.createElement('span');
+    span.textContent=getTxnCategory(txn);
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('cat-picker-modal')?.classList.contains('open')) return;
+      openCategoryPicker(txn.id, txn.category||'', txn.subcategory||'', txn.payee||'', 'all',
+        (category,subcategory)=>{
+          span.textContent=formatCatDisplay(category,subcategory);
+          updateAllTxnCategory(txn.id, category, subcategory);
+        });
+    };
+    return td;
+  }
+  if(field==='payee'){
+    const td=document.createElement('td'); td.className='editable '+(extraClass||'');
+    let span;
+    if(section) span=makePayeeAllSpan(txn,section);
+    else{
+      span=document.createElement('span');
+      span.textContent=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn.payee||'');
+    }
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
+      openPayeePicker(txn.transfer_account_id ? '' : (txn.payee||''), (payeeName, accountId)=>{
+        if(accountId){
+          if(String(accountId)===String(txn.transfer_account_id)) return;
+          if(section){ const s=makePayeeAllSpan({...txn,transfer_account_id:accountId},section); span.replaceWith(s); }
+          else span.textContent=getAccountName(accountId)||payeeName;
+          updateAllPayeeAndTransfer(txn.id, payeeName, accountId);
+        } else {
+          if(payeeName===txn.payee && !txn.transfer_account_id) return;
+          if(section){ const s=makePayeeAllSpan({...txn,payee:payeeName,transfer_account_id:null},section); span.replaceWith(s); }
+          else span.textContent=payeeName;
+          const {category,subcategory}=getPayeeCatObj(payeeName);
+          updateAllPayeeAndTransfer(txn.id, payeeName, null, category?{category,subcategory}:{});
+        }
+      });
+    };
+    return td;
   }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
-  let span;
-  if(field==='payee'&&section) span=makePayeeAllSpan(txn,section);
-  else{
-    span=document.createElement('span');
+  const span=document.createElement('span');
+  {
     if(field==='amount') span.innerHTML=fmtTxnAmt(txn.amount,txn.entry_type);
     else if(field==='entry_type') span.textContent=txn.entry_type==='credit'?'Income':'Expense';
     else if(field==='date') span.textContent=txn.date||'';   // full YYYY-MM-DD
@@ -2574,7 +2503,13 @@ function makeAllEC(txn,field,type,extraClass,section){
         const transferChanged=String(latest.transfer_account_id||'')!==String(transferAccountId||'');
         if(!payeeChanged&&!transferChanged) return false;
         if(v) addPayee(v);
-        updateAllPayeeAndTransfer(txn.id, payeeChanged?v:latest.payee, transferChanged?transferAccountId:latest.transfer_account_id);
+        const catExtra={};
+        if(payeeChanged && v && !transferAccountId){
+          const {category,subcategory}=getPayeeCatObj(v);
+          if(category){ catExtra.category=category; catExtra.subcategory=subcategory; }
+        }
+        updateAllPayeeAndTransfer(txn.id, payeeChanged?v:latest.payee,
+          transferChanged?transferAccountId:latest.transfer_account_id, catExtra);
         return true;
       }
       if(valuesEqual(field,latest[field],v)) return false;
@@ -2710,12 +2645,30 @@ async function updateAllField(id,field,value){
   refreshSuggestions();
 }
 
-async function updateAllPayeeAndTransfer(id,payee,transferAccountId){
+async function updateAllTxnCategory(id, category, subcategory){
+  const txn=getAllTxnById(id);
+  if(!txn) return;
+  applyLocalAllTxnField(id,'category',category);
+  applyLocalAllTxnField(id,'subcategory',subcategory);
+  const data=await resilientApiFetch(`/api/transactions/${id}`,
+    {method:'PUT',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({category,subcategory})}).then(r=>r.json());
+  if(txn.transfer_group_id){
+    allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
+  }else{
+    const i=allTransactions.findIndex(t=>t.id===id);
+    if(i!==-1) allTransactions[i]={...allTransactions[i],...data};
+  }
+  if(!hasActiveEditor()) renderAllTransactions();
+}
+
+async function updateAllPayeeAndTransfer(id,payee,transferAccountId,extraFields={}){
   const txn=getAllTxnById(id);
   if(!txn) return;
   applyLocalAllTxnField(id,'payee',payee);
   applyLocalAllTxnField(id,'transfer_account_id',transferAccountId);
-  const patch={payee,transfer_account_id:transferAccountId};
+  for(const [k,v] of Object.entries(extraFields)) applyLocalAllTxnField(id,k,v);
+  const patch={payee,transfer_account_id:transferAccountId,...extraFields};
   await resilientApiFetch(`/api/transactions/${id}`,
     {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)}).then(r=>r.json());
   allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
@@ -2748,6 +2701,7 @@ async function doPushToTemplateAll(txnId){
 // ── Filters ──────────────────────────────────────────────────────────────────
 const allFilterState={
   search:'', dateFrom:'', dateTo:'',
+  payees:new Set(),        // empty = all
   categories:new Set(),   // empty = all
   statuses:new Set(),     // empty = all
   entryType:'both',
@@ -2755,12 +2709,13 @@ const allFilterState={
 };
 
 function applyAllFilters(rows){
-  const {search,dateFrom,dateTo,categories,statuses,entryType,amountMin,amountMax}=allFilterState;
+  const {search,dateFrom,dateTo,payees,categories,statuses,entryType,amountMin,amountMax}=allFilterState;
   const q=search.trim().toLowerCase();
   return rows.filter(t=>{
     if(q && ![getTxnDisplayPayee(t),(t.category||''),(t.notes||'')].some(s=>s.toLowerCase().includes(q))) return false;
     if(dateFrom && t.date && t.date<dateFrom) return false;
     if(dateTo   && t.date && t.date>dateTo)   return false;
+    if(payees.size     && !payees.has(getTxnDisplayPayee(t)))  return false;
     if(categories.size && !categories.has(t.category||'')) return false;
     if(statuses.size   && !statuses.has(t.status||''))     return false;
     if(entryType!=='both' && t.entry_type!==entryType)     return false;
@@ -2774,7 +2729,7 @@ function applyAllFilters(rows){
 function countActiveFilters(){
   const f=allFilterState;
   return (!isAllAccountsSelected()?1:0)+(f.search?1:0)+(f.dateFrom?1:0)+(f.dateTo?1:0)+
-         (f.categories.size?1:0)+(f.statuses.size?1:0)+
+         (f.payees.size?1:0)+(f.categories.size?1:0)+(f.statuses.size?1:0)+
          (f.entryType!=='both'?1:0)+(f.amountMin!==''?1:0)+(f.amountMax!==''?1:0);
 }
 
@@ -2862,6 +2817,50 @@ function setAllEntryType(t){
   renderAllTransactions();
 }
 
+// Payee dropdown
+function buildAllPayeeDropdown(){
+  const list=document.getElementById('af-payee-list');
+  if(!list) return;
+  const payees=[...new Set(allTransactions.map(t=>getTxnDisplayPayee(t)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  list.innerHTML='';
+  payees.forEach(payee=>{
+    const item=document.createElement('label');
+    item.className='fcat-item';
+    const cb=document.createElement('input');
+    cb.type='checkbox'; cb.value=payee;
+    cb.checked=allFilterState.payees.has(payee);
+    cb.onchange=()=>{
+      if(cb.checked) allFilterState.payees.add(payee);
+      else allFilterState.payees.delete(payee);
+      updatePayeeLabel(); renderAllTransactions();
+    };
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(payee));
+    list.appendChild(item);
+  });
+}
+
+function updatePayeeLabel(){
+  const el=document.getElementById('af-payee-label');
+  if(!el) return;
+  const n=allFilterState.payees.size;
+  el.textContent=n===0?'All payees':n===1?[...allFilterState.payees][0]:`${n} payees`;
+}
+
+function toggleAllPayeeDropdown(e){
+  e.stopPropagation();
+  buildAllPayeeDropdown();
+  document.getElementById('af-payee-list').classList.toggle('open');
+}
+
+document.addEventListener('click',e=>{
+  const wrap=document.getElementById('af-payee-wrap');
+  if(wrap && !wrap.contains(e.target)){
+    const list=document.getElementById('af-payee-list');
+    if(list) list.classList.remove('open');
+  }
+});
+
 // Category dropdown
 function buildAllCatDropdown(){
   const list=document.getElementById('af-cat-list');
@@ -2910,7 +2909,7 @@ document.addEventListener('click',e=>{
 
 function clearAllFilters(){
   allFilterState.search=''; allFilterState.dateFrom=''; allFilterState.dateTo='';
-  allFilterState.categories.clear(); allFilterState.statuses.clear();
+  allFilterState.payees.clear(); allFilterState.categories.clear(); allFilterState.statuses.clear();
   allFilterState.entryType='both';
   allFilterState.amountMin=''; allFilterState.amountMax='';
   // Reset form controls
@@ -2921,7 +2920,7 @@ function clearAllFilters(){
     const btn=document.getElementById(`af-st-${s}`);if(btn) btn.classList.remove('on');
   });
   setAllEntryType('both');
-  updateCatLabel();
+  updatePayeeLabel(); updateCatLabel();
   renderAllTransactions();
 }
 
@@ -2993,7 +2992,9 @@ async function commitGhostMonthly(entryType){
   const fullDate = `${currentMonth}-${String(day).padStart(2,'0')}`;
   const payeeEl  = document.getElementById(`${p}-payee`);
   const payee    = payeeEl.value.trim();
-  const category = document.getElementById(`${p}-cat`).value.trim();
+  const catEl    = document.getElementById(`${p}-cat`);
+  const category = catEl?.dataset.cat || catEl?.value.trim() || '';
+  const subcategory = catEl?.dataset.subcat || '';
   const amount   = parseFloat(document.getElementById(`${p}-amount`).value)||0;
   const notes    = document.getElementById(`${p}-notes`).value.trim();
   const accountId = getMonthlyGhostAccountId(p);
@@ -3002,7 +3003,7 @@ async function commitGhostMonthly(entryType){
   const transferAccountId = storedTId
     ? (String(storedTId)!==String(accountId) ? parseInt(storedTId,10) : null)
     : (transferAccount && String(transferAccount.id)!==String(accountId) ? transferAccount.id : null);
-  const body = {date:fullDate,payee,category,amount,entry_type:entryType,
+  const body = {date:fullDate,payee,category,subcategory,amount,entry_type:entryType,
                 status:'estimated',is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
                 account_id:accountId || undefined,
                 transfer_account_id:transferAccountId || undefined};
@@ -3020,19 +3021,23 @@ async function commitGhostMonthly(entryType){
 }
 function clearGhostMonthly(entryType){
   const p = entryType==='credit' ? 'gi-inc' : 'gi-exp';
-  ['date','payee','cat','amount','notes'].forEach(f=>{
+  ['date','payee','amount','notes'].forEach(f=>{
     const el=document.getElementById(`${p}-${f}`); if(el) el.value='';
   });
+  const catEl=document.getElementById(`${p}-cat`);
+  if(catEl){ catEl.value=''; catEl.dataset.cat=''; catEl.dataset.subcat=''; catEl.style.color='var(--mu)'; }
 }
 async function commitGhostAll(){
   const date=document.getElementById('gia-date').value.trim();
   if(!date){ document.getElementById('gia-date').focus(); return; }
   const entryType=document.getElementById('gia-type').value;
   const payee    =document.getElementById('gia-payee').value.trim();
-  const category =document.getElementById('gia-cat').value.trim();
+  const giaCatEl =document.getElementById('gia-cat');
+  const category =giaCatEl?.dataset.cat || giaCatEl?.value.trim() || '';
+  const subcategory=giaCatEl?.dataset.subcat || '';
   const amount   =parseFloat(document.getElementById('gia-amount').value)||0;
   const notes    =document.getElementById('gia-notes').value.trim();
-  const body={date,payee,category,amount,entry_type:entryType,status:'estimated',
+  const body={date,payee,category,subcategory,amount,entry_type:entryType,status:'estimated',
               is_adhoc:0,recurs_monthly:0,is_automatic:0,notes,sort_order:0,
               account_id:isAllAccountsSelected() ? undefined : getSelectedAccountIds()[0]};
   try{
@@ -3048,10 +3053,392 @@ async function commitGhostAll(){
   }catch(e){ console.error('commitGhostAll',e); }
 }
 function clearGhostAll(){
-  ['date','payee','cat','amount','notes'].forEach(f=>{
+  ['date','payee','amount','notes'].forEach(f=>{
     const el=document.getElementById(`gia-${f}`); if(el) el.value='';
   });
+  const catEl=document.getElementById('gia-cat');
+  if(catEl){ catEl.value=''; catEl.dataset.cat=''; catEl.dataset.subcat=''; catEl.style.color='var(--mu)'; }
 }
+// ── Payee Picker ─────────────────────────────────────────────────────────────
+let _payeePickerCallback = null;
+
+function openPayeePicker(currentPayee, onSelect){
+  _payeePickerCallback = onSelect;
+  const srch = document.getElementById('payee-picker-search');
+  if(srch){ srch.value = ''; }
+  const btn = document.getElementById('payee-picker-create-btn');
+  if(btn) btn.disabled = true;
+  renderPayeePickerList('');
+  document.getElementById('payee-picker-modal').classList.add('open');
+  if(srch) setTimeout(()=>srch.focus(), 50);
+}
+
+function closePayeePicker(){
+  document.getElementById('payee-picker-modal').classList.remove('open');
+  _payeePickerCallback = null;
+}
+
+function payeePickerBgClick(e){
+  if(e.target===document.getElementById('payee-picker-modal')) closePayeePicker();
+}
+
+function filterPayeePicker(){
+  const q = (document.getElementById('payee-picker-search')?.value||'').toLowerCase();
+  renderPayeePickerList(q);
+  const btn = document.getElementById('payee-picker-create-btn');
+  if(btn){
+    const typed = (document.getElementById('payee-picker-search')?.value||'').trim();
+    const exactMatch = typed && [...payees].some(p=>p.toLowerCase()===typed.toLowerCase());
+    btn.disabled = !typed || exactMatch;
+  }
+}
+
+function renderPayeePickerList(q){
+  const list = document.getElementById('payee-picker-list');
+  if(!list) return;
+  list.innerHTML = '';
+  const accountNames = new Set(accounts.map(a=>(a.name||'').toLowerCase()));
+  const sorted = [...payees].filter(p=>p&&!accountNames.has(p.toLowerCase()))
+                            .sort((a,b)=>a.localeCompare(b));
+  const filteredPayees = q ? sorted.filter(name=>name.toLowerCase().includes(q)) : sorted;
+  const filteredAccounts = accounts.filter(a=>{
+    const n = (a.name||`Account ${a.id}`).toLowerCase();
+    return !q || n.includes(q);
+  });
+
+  if(!filteredPayees.length && !filteredAccounts.length){
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:12px 10px;color:var(--mu);font-size:12px';
+    empty.textContent = q ? 'No matching payees or accounts' : 'No payees yet — type above to create one';
+    list.appendChild(empty);
+    return;
+  }
+
+  filteredPayees.forEach(name=>{
+    const {category, subcategory} = getPayeeCatObj(name);
+    const catLabel = formatCatDisplay(category, subcategory) || UNCAT_LABEL;
+    const row = document.createElement('div');
+    row.className = 'ppick-row';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ppick-name';
+    nameSpan.textContent = name;
+    const catSpan = document.createElement('span');
+    catSpan.className = 'ppick-cat';
+    catSpan.textContent = catLabel;
+    row.appendChild(nameSpan);
+    row.appendChild(catSpan);
+    row.onclick = () => payeePickerSelect(name, null);
+    list.appendChild(row);
+  });
+
+  if(filteredAccounts.length){
+    const section = document.createElement('div');
+    section.className = 'ppick-section';
+    section.textContent = 'Transfer to / from Account';
+    list.appendChild(section);
+    filteredAccounts.forEach(acc=>{
+      const name = acc.name || `Account ${acc.id}`;
+      const row = document.createElement('div');
+      row.className = 'ppick-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'ppick-name ppick-account';
+      nameSpan.textContent = name;
+      const typeSpan = document.createElement('span');
+      typeSpan.className = 'ppick-cat';
+      typeSpan.textContent = acc.type || 'account';
+      row.appendChild(nameSpan);
+      row.appendChild(typeSpan);
+      row.onclick = () => payeePickerSelect(name, acc.id);
+      list.appendChild(row);
+    });
+  }
+}
+
+function payeePickerSelect(name, accountId){
+  const cb = _payeePickerCallback;
+  closePayeePicker();
+  if(cb) cb(name, accountId||null);
+}
+
+function payeePickerCreate(){
+  const srch = document.getElementById('payee-picker-search');
+  const name = (srch?.value||'').trim();
+  if(!name) return;
+  payeePickerSelect(name, null);
+}
+
+// ── Category Picker ──────────────────────────────────────────────────────────
+let _catPickerCtx = null; // {txnId, payee, oldCategory, oldSubcategory, viewType, onApply}
+let _catPickerExpanded = new Set();
+
+function openCategoryPicker(txnId, currentCat, currentSubcat, payee, viewType, onApply){
+  _catPickerCtx = {txnId, payee:payee||'', oldCategory:currentCat||'', oldSubcategory:currentSubcat||'', viewType, onApply};
+  _catPickerExpanded.clear();
+  if(currentCat) _catPickerExpanded.add(currentCat);
+  const srch = document.getElementById('cat-picker-search');
+  if(srch) srch.value='';
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn) btn.disabled = true;
+  renderCatPickerList('');
+  document.getElementById('cat-picker-modal').classList.add('open');
+  if(srch) setTimeout(()=>srch.focus(),50);
+}
+
+function closeCatPicker(){
+  document.getElementById('cat-picker-modal').classList.remove('open');
+  _catPickerCtx = null;
+}
+
+function catPickerBgClick(e){
+  if(e.target===document.getElementById('cat-picker-modal')) closeCatPicker();
+}
+
+function filterCatPicker(){
+  const q = (document.getElementById('cat-picker-search')?.value||'').toLowerCase();
+  renderCatPickerList(q);
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn){
+    const typedRaw = (document.getElementById('cat-picker-search')?.value||'').trim();
+    const exactMatch = typedRaw && getCategoryHierarchy().some(h=>h.category.toLowerCase()===typedRaw.toLowerCase());
+    btn.disabled = !typedRaw || exactMatch;
+  }
+}
+
+function renderCatPickerList(q){
+  const list = document.getElementById('cat-picker-list');
+  if(!list) return;
+  list.innerHTML = '';
+  const hierarchy = getCategoryHierarchy();
+  hierarchy.forEach(({category, subcategories})=>{
+    const catMatch = !q || category.toLowerCase().includes(q);
+    const subMatches = subcategories.filter(s=>!q||s.toLowerCase().includes(q)||category.toLowerCase().includes(q));
+    if(!catMatch && !subMatches.length) return;
+    const expanded = _catPickerExpanded.has(category) || (!!q && subMatches.length>0);
+    const hasSubs = subcategories.length > 0;
+
+    // top-level row
+    const topRow = document.createElement('div');
+    topRow.className = 'cpick-top';
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'cpick-expand';
+    expandBtn.title = expanded ? 'Collapse' : 'Expand';
+    expandBtn.textContent = hasSubs ? (expanded?'▼':'▶') : ' ';
+    expandBtn.onclick = e => {
+      e.stopPropagation();
+      if(!hasSubs) return;
+      if(_catPickerExpanded.has(category)) _catPickerExpanded.delete(category);
+      else _catPickerExpanded.add(category);
+      renderCatPickerList(document.getElementById('cat-picker-search')?.value?.toLowerCase()||'');
+    };
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'cpick-cat-name';
+    nameSpan.textContent = category;
+    nameSpan.title = 'Select (no subcategory)';
+    nameSpan.onclick = () => catPickerSelect(category, '');
+    topRow.appendChild(expandBtn);
+    topRow.appendChild(nameSpan);
+    list.appendChild(topRow);
+
+    if(expanded){
+      const showSubs = q ? subMatches : subcategories;
+      showSubs.forEach(sub=>{
+        const subRow = document.createElement('div');
+        subRow.className = 'cpick-sub';
+        subRow.textContent = sub;
+        subRow.onclick = () => catPickerSelect(category, sub);
+        list.appendChild(subRow);
+      });
+      // Add subcategory row
+      const addRow = document.createElement('div');
+      addRow.className = 'cpick-add-sub';
+      const addInp = document.createElement('input');
+      addInp.type='text'; addInp.placeholder='New subcategory…'; addInp.className='cpick-add-inp';
+      addInp.onkeydown = e => { if(e.key==='Enter'){e.preventDefault();catPickerAddSub(category,addInp.value.trim());} };
+      const addBtn = document.createElement('button');
+      addBtn.className='btn-ol btn-sm'; addBtn.textContent='+';
+      addBtn.onclick = () => catPickerAddSub(category, addInp.value.trim());
+      addRow.appendChild(addInp); addRow.appendChild(addBtn);
+      list.appendChild(addRow);
+    }
+  });
+  if(!hierarchy.length || (!q && !hierarchy.length)){
+    const empty = document.createElement('div');
+    empty.style.cssText='padding:12px 10px;color:var(--mu);font-size:12px';
+    empty.textContent = q ? 'No matching categories' : 'No categories yet — add one below';
+    list.appendChild(empty);
+  }
+}
+
+function catPickerSelect(category, subcategory){
+  const ctx = _catPickerCtx;
+  closeCatPicker();
+  if(!ctx) return;
+
+  if(ctx.returnToScope && _catScopeCtx){
+    // "Change…" was clicked from scope dialog — update scope dialog with new selection
+    _catScopeCtx.newCategory = category;
+    _catScopeCtx.newSubcategory = subcategory;
+    if(ctx.onApply) ctx.onApply(category, subcategory); // update transaction display
+    updateCatScopeDisplay();
+    document.getElementById('cat-scope-modal').classList.add('open');
+    return;
+  }
+
+  // Apply category to the transaction immediately
+  if(ctx.onApply) ctx.onApply(category, subcategory);
+
+  // If this transaction has a payee, show the scope dialog whenever the category changed
+  const txnPrevCat = ctx.oldCategory || '';
+  const txnPrevSub = ctx.oldSubcategory || '';
+  const actuallyChanged = category !== txnPrevCat || subcategory !== txnPrevSub;
+  if(ctx.payee && !ctx.payee.startsWith('_transfer_') && actuallyChanged && ctx.txnId !== null){
+    const {category:payeeDfltCat, subcategory:payeeDfltSub} = getPayeeCatObj(ctx.payee);
+    openCatScope(ctx.payee, category, subcategory, payeeDfltCat, payeeDfltSub,
+                 txnPrevCat, txnPrevSub, ctx.txnId, ctx.viewType, ctx.onApply);
+  }
+}
+
+function catPickerAddTop(){
+  const srch = document.getElementById('cat-picker-search');
+  const cat = (srch?.value||'').trim();
+  if(!cat) return;
+  catPickerSelect(cat, '');
+}
+
+function catPickerAddSub(category, subcategory){
+  if(!subcategory) return;
+  catPickerSelect(category, subcategory);
+}
+
+// ── Category Scope Dialog ─────────────────────────────────────────────────────
+// ctx fields:
+//   payee, newCategory, newSubcategory  — the category being set
+//   payeeDefaultCategory, payeeDefaultSubcategory — payee's current persistent default
+//   txnPrevCategory, txnPrevSubcategory — transaction's category before this change
+//   txnId, viewType, onApply
+let _catScopeCtx = null;
+
+function openCatScope(payee, newCat, newSub, payeeDfltCat, payeeDfltSub,
+                      txnPrevCat, txnPrevSub, txnId, viewType, onApply){
+  _catScopeCtx = {
+    payee, newCategory:newCat, newSubcategory:newSub,
+    payeeDefaultCategory:payeeDfltCat, payeeDefaultSubcategory:payeeDfltSub,
+    txnPrevCategory:txnPrevCat, txnPrevSubcategory:txnPrevSub,
+    txnId, viewType, onApply
+  };
+  updateCatScopeDisplay();
+  document.getElementById('cat-scope-modal').classList.add('open');
+}
+
+const UNCAT_LABEL = 'Uncategorized';
+
+function updateCatScopeDisplay(){
+  const ctx = _catScopeCtx;
+  if(!ctx) return;
+  const el = id => document.getElementById(id);
+  const p = ctx.payee;
+  const dfltLabel = formatCatDisplay(ctx.payeeDefaultCategory, ctx.payeeDefaultSubcategory) || UNCAT_LABEL;
+  const newLabel  = formatCatDisplay(ctx.newCategory, ctx.newSubcategory) || UNCAT_LABEL;
+  const prevLabel = formatCatDisplay(ctx.txnPrevCategory, ctx.txnPrevSubcategory) || UNCAT_LABEL;
+
+  if(el('cat-scope-payee-title'))   el('cat-scope-payee-title').textContent   = p;
+  if(el('cat-scope-payee-lbl-row')) el('cat-scope-payee-lbl-row').textContent = `${p}'s default:`;
+  if(el('cat-scope-txn-prev'))      el('cat-scope-txn-prev').textContent      = prevLabel;
+  if(el('cat-scope-payee-default')) el('cat-scope-payee-default').textContent = dfltLabel;
+  if(el('cat-scope-new-cat'))       el('cat-scope-new-cat').textContent       = newLabel;
+
+  // Radio label text — full strings, no embedded elements
+  if(el('cat-scope-label-fwd'))
+    el('cat-scope-label-fwd').textContent =
+      `Update ${p}'s default (won't change past transactions)`;
+  if(el('cat-scope-label-all'))
+    el('cat-scope-label-all').textContent =
+      `Update ${p}'s default and apply to all past transactions for this payee`;
+  if(el('cat-scope-label-matching'))
+    el('cat-scope-label-matching').textContent =
+      `Update ${p}'s default and only apply to past transactions currently categorized as "${dfltLabel}"`;
+
+  // "matching old" is always shown — Uncategorized is a valid state to match against
+  const matchingRow = el('cat-scope-matching-row');
+  if(matchingRow) matchingRow.style.display = '';
+
+  const radio = document.querySelector('input[name="cat-scope"][value="txn_only"]');
+  if(radio) radio.checked = true;
+}
+
+function catScopeChangeCategory(){
+  const ctx = _catScopeCtx;
+  if(!ctx) return;
+  // Hide scope modal without destroying ctx, then reopen picker with returnToScope flag
+  document.getElementById('cat-scope-modal').classList.remove('open');
+  _catPickerExpanded.clear();
+  if(ctx.newCategory) _catPickerExpanded.add(ctx.newCategory);
+  _catPickerCtx = {
+    txnId: ctx.txnId, payee: ctx.payee,
+    oldCategory: ctx.txnPrevCategory, oldSubcategory: ctx.txnPrevSubcategory,
+    viewType: ctx.viewType, onApply: ctx.onApply, returnToScope: true
+  };
+  const srch = document.getElementById('cat-picker-search');
+  if(srch) srch.value='';
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn) btn.disabled = true;
+  renderCatPickerList('');
+  document.getElementById('cat-picker-modal').classList.add('open');
+  if(srch) setTimeout(()=>srch.focus(), 50);
+}
+
+function closeCatScope(){
+  document.getElementById('cat-scope-modal').classList.remove('open');
+  _catScopeCtx = null;
+}
+
+function catScopeBgClick(e){
+  if(e.target===document.getElementById('cat-scope-modal')) closeCatScope();
+}
+
+async function catScopeApply(){
+  const ctx = _catScopeCtx;
+  closeCatScope();
+  if(!ctx) return;
+  const scope = document.querySelector('input[name="cat-scope"]:checked')?.value || 'txn_only';
+
+  // The transaction was already updated when the user first picked the category.
+  // If scope is 'txn_only', nothing more to do.
+  if(scope === 'txn_only') return;
+
+  const backendScope = scope==='payee_all' ? 'all' : scope==='payee_matching' ? 'matching_old' : 'none';
+  const payeeObj = payeesList.find(p=>p.name===ctx.payee);
+
+  if(payeeObj){
+    await resilientApiFetch(`/api/payees/${payeeObj.id}/category`,{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        category:ctx.newCategory, subcategory:ctx.newSubcategory,
+        scope:backendScope,
+        // "matching_old" filters on the payee's CURRENT default (before we change it)
+        old_category:ctx.payeeDefaultCategory, old_subcategory:ctx.payeeDefaultSubcategory
+      })
+    });
+  } else {
+    // No payee record yet — create one
+    await resilientApiFetch('/api/payees',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:ctx.payee,category:ctx.newCategory,subcategory:ctx.newSubcategory})
+    });
+  }
+
+  await refreshSuggestions();
+  if(backendScope==='all'||backendScope==='matching_old'){
+    if(ctx.viewType==='all'){
+      allTransactions=await resilientApiFetch(`/api/transactions/all${txnFetchQuery()}`).then(r=>r.json());
+      renderAllTransactions();
+    } else {
+      transactions=await resilientApiFetch(`/api/months/${currentMonth}/transactions${txnFetchQuery()}`).then(r=>r.json());
+      renderTransactions();
+    }
+  }
+}
+
 function initGhostRows(){
   // Wire autocomplete + Enter/Tab handling for a ghost row's inputs.
   // When dropdown is open: Enter/Tab pick the highlighted item and advance to the next field.
@@ -3059,15 +3446,41 @@ function initGhostRows(){
   const wire=(pfx, inputIds, commitFn)=>{
     const payeeEl=document.getElementById(`${pfx}-payee`);
     const catEl  =document.getElementById(`${pfx}-cat`);
-    if(catEl){ catEl.readOnly=true; catEl.style.cursor='default'; catEl.style.color='var(--mu)'; }
+    if(catEl){
+      catEl.readOnly=true; catEl.style.cursor='pointer';
+      catEl.addEventListener('click',()=>{
+        const currentCat = catEl.dataset.cat||'';
+        const currentSub = catEl.dataset.subcat||'';
+        openCategoryPicker(null, currentCat, currentSub, payeeEl?.value?.trim()||'', 'ghost',
+          (category,subcategory)=>{
+            catEl.dataset.cat=category; catEl.dataset.subcat=subcategory;
+            catEl.value=formatCatDisplay(category,subcategory);
+            catEl.style.color=category?'var(--tx)':'var(--mu)';
+          });
+      });
+    }
     const updateCat=()=>{
       if(!catEl||!payeeEl) return;
       const name=payeeEl.value.trim();
-      catEl.value=Object.prototype.hasOwnProperty.call(payeesMap,name)?payeesMap[name]:'';
+      const {category,subcategory}=getPayeeCatObj(name);
+      catEl.dataset.cat=category; catEl.dataset.subcat=subcategory;
+      catEl.value=formatCatDisplay(category,subcategory);
+      catEl.style.color=category?'var(--tx)':'var(--mu)';
     };
     if(payeeEl){
-      payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; updateCat(); });
-      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; setTemplatePayeeSelection(payeeEl,opt); updateCat(); },null);
+      payeeEl.readOnly=true; payeeEl.style.cursor='pointer';
+      payeeEl.addEventListener('click',()=>{
+        const currentPayee = payeeEl.dataset.transferAccountId ? '' : payeeEl.value.trim();
+        openPayeePicker(currentPayee, (name, accountId)=>{
+          payeeEl.value=name;
+          if(accountId){
+            payeeEl.dataset.transferAccountId=String(accountId);
+          } else {
+            delete payeeEl.dataset.transferAccountId;
+            updateCat();
+          }
+        });
+      });
     }
     inputIds.forEach((id, i)=>{
       const el=document.getElementById(id); if(!el) return;
@@ -3103,15 +3516,41 @@ function initGhostRows(){
   // All-transactions ghost row
   const giaPayee=document.getElementById('gia-payee');
   const giaCat  =document.getElementById('gia-cat');
-  if(giaCat){ giaCat.readOnly=true; giaCat.style.cursor='default'; giaCat.style.color='var(--mu)'; }
+  if(giaCat){
+    giaCat.readOnly=true; giaCat.style.cursor='pointer';
+    giaCat.addEventListener('click',()=>{
+      const currentCat=giaCat.dataset.cat||'';
+      const currentSub=giaCat.dataset.subcat||'';
+      openCategoryPicker(null, currentCat, currentSub, giaPayee?.value?.trim()||'', 'ghost',
+        (category,subcategory)=>{
+          giaCat.dataset.cat=category; giaCat.dataset.subcat=subcategory;
+          giaCat.value=formatCatDisplay(category,subcategory);
+          giaCat.style.color=category?'var(--tx)':'var(--mu)';
+        });
+    });
+  }
   const updateGiaCat=()=>{
     if(!giaCat||!giaPayee) return;
     const name=giaPayee.value.trim();
-    giaCat.value=Object.prototype.hasOwnProperty.call(payeesMap,name)?payeesMap[name]:'';
+    const {category,subcategory}=getPayeeCatObj(name);
+    giaCat.dataset.cat=category; giaCat.dataset.subcat=subcategory;
+    giaCat.value=formatCatDisplay(category,subcategory);
+    giaCat.style.color=category?'var(--tx)':'var(--mu)';
   };
   if(giaPayee){
-    giaPayee.addEventListener('input', ()=>{ delete giaPayee.dataset.transferAccountId; updateGiaCat(); });
-    acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; setTemplatePayeeSelection(giaPayee,opt); updateGiaCat(); },null);
+    giaPayee.readOnly=true; giaPayee.style.cursor='pointer';
+    giaPayee.addEventListener('click',()=>{
+      const currentPayee = giaPayee.dataset.transferAccountId ? '' : giaPayee.value.trim();
+      openPayeePicker(currentPayee, (name, accountId)=>{
+        giaPayee.value=name;
+        if(accountId){
+          giaPayee.dataset.transferAccountId=String(accountId);
+        } else {
+          delete giaPayee.dataset.transferAccountId;
+          updateGiaCat();
+        }
+      });
+    });
   }
   const giaIds=['gia-date','gia-payee','gia-cat','gia-amount','gia-notes'];
   giaIds.forEach((id, i)=>{

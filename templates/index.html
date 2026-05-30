@@ -17,7 +17,6 @@
   <button class="nav-tab active" id="tab-monthly"  onclick="showView('monthly')">Monthly View</button>
   <button class="nav-tab"        id="tab-template" onclick="showView('template')">Template Builder</button>
   <button class="nav-tab"        id="tab-all"      onclick="showView('all')">All Transactions</button>
-  <button class="nav-tab"        id="tab-payees"   onclick="showView('payees')">Payees</button>
   <button class="nav-tab"        id="tab-accounts" onclick="showView('accounts')">Accounts</button>
   <div class="account-selector-wrap">
     <button type="button" id="account-selector-button" class="account-selector-btn" onclick="toggleAccountSelectorPanel()">All Accounts</button>
@@ -297,6 +296,18 @@
         <input class="filter-input" type="date" id="af-to" onchange="onAllFilterChange()">
       </div>
 
+      <!-- payee multi-select -->
+      <div class="filter-group">
+        <label>Payee</label>
+        <div class="fcat-wrap" id="af-payee-wrap">
+          <button class="fcat-btn" id="af-payee-btn" onclick="toggleAllPayeeDropdown(event)">
+            <span id="af-payee-label">All payees</span>
+            <i class="bi bi-chevron-down" style="font-size:10px;margin-left:auto"></i>
+          </button>
+          <div class="fcat-list" id="af-payee-list"></div>
+        </div>
+      </div>
+
       <!-- category multi-select -->
       <div class="filter-group">
         <label>Category</label>
@@ -497,56 +508,93 @@
 
 <div class="toast-area" id="ta"></div>
 
-<!-- Payees admin view -->
-<div id="view-payees" class="view">
-  <div class="toolbar">
-    <span style="font-weight:600">Payees</span>
-    <span style="font-size:12px;color:var(--mu)">— Manage payee names and their associated categories</span>
+<!-- Payee picker modal -->
+<div class="modal-bg" id="payee-picker-modal" onclick="payeePickerBgClick(event)">
+  <div class="modal-box cat-picker-box" onclick="event.stopPropagation()">
+    <h4>Select Payee</h4>
+    <div class="cat-picker-search-row">
+      <input type="text" class="cat-picker-search" id="payee-picker-search"
+             placeholder="Search or type a new payee…" autocomplete="off"
+             oninput="filterPayeePicker()"
+             onkeydown="if(event.key==='Enter'&&!document.getElementById('payee-picker-create-btn').disabled){event.preventDefault();payeePickerCreate();}">
+      <button class="btn-ac btn-sm" id="payee-picker-create-btn" onclick="payeePickerCreate()" disabled>New</button>
+    </div>
+    <div class="cat-picker-list" id="payee-picker-list"></div>
+    <div style="text-align:right;margin-top:10px">
+      <button class="btn-ol btn-sm" onclick="closePayeePicker()">Cancel</button>
+    </div>
   </div>
-  <div class="accounts-shell">
-    <section class="accounts-panel">
-      <div class="section-header">
-        <i class="bi bi-person-lines-fill" style="color:var(--ac)"></i>
-        Payees
-        <span class="section-sum" id="payees-count"></span>
+</div>
+
+<!-- Category picker modal -->
+<div class="modal-bg" id="cat-picker-modal" onclick="catPickerBgClick(event)">
+  <div class="modal-box cat-picker-box" onclick="event.stopPropagation()">
+    <h4>Select Category</h4>
+    <div class="cat-picker-search-row">
+      <input type="text" class="cat-picker-search" id="cat-picker-search"
+             placeholder="Search or type a new category…" autocomplete="off"
+             oninput="filterCatPicker()"
+             onkeydown="if(event.key==='Enter'&&!document.getElementById('cat-picker-create-btn').disabled){event.preventDefault();catPickerAddTop();}">
+      <button class="btn-ac btn-sm" id="cat-picker-create-btn" onclick="catPickerAddTop()" disabled>New</button>
+    </div>
+    <div class="cat-picker-list" id="cat-picker-list"></div>
+    <div style="text-align:right;margin-top:10px">
+      <button class="btn-ol btn-sm" onclick="closeCatPicker()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Payee-category scope dialog -->
+<div class="modal-bg" id="cat-scope-modal" onclick="catScopeBgClick(event)">
+  <div class="modal-box cat-scope-box" onclick="event.stopPropagation()">
+    <h4>Category — <span id="cat-scope-payee-title"></span></h4>
+
+    <div class="cat-scope-info">
+      <div class="cat-scope-info-row">
+        <span class="cat-scope-info-lbl">This transaction was:</span>
+        <span class="cat-scope-info-val" id="cat-scope-txn-prev"></span>
       </div>
-      <div class="scroll-content">
-        <table class="txn-table accounts-table">
-          <thead><tr>
-            <th style="width:90px">ID</th>
-            <th>Name</th>
-            <th style="width:160px">Category</th>
-            <th style="width:160px">Subcategory</th>
-            <th style="width:130px"></th>
-          </tr></thead>
-          <tbody id="payees-body"></tbody>
-        </table>
+      <div class="cat-scope-info-row">
+        <span class="cat-scope-info-lbl" id="cat-scope-payee-lbl-row"></span>
+        <span class="cat-scope-info-val" id="cat-scope-payee-default"></span>
       </div>
-    </section>
-    <section class="accounts-panel accounts-form-panel">
-      <div class="section-header">
-        <i class="bi bi-pencil-square" style="color:var(--am)"></i>
-        Edit Payee
+      <div class="cat-scope-info-row">
+        <span class="cat-scope-info-lbl">New category:</span>
+        <span class="cat-scope-info-val cat-scope-new-val" id="cat-scope-new-cat"></span>
+        <button class="btn-ol btn-sm cat-scope-change-btn" onclick="catScopeChangeCategory()">Change…</button>
       </div>
-      <div class="accounts-form">
-        <input type="hidden" id="payee-form-id">
-        <label>Name</label>
-        <input class="filter-input account-form-input" id="payee-form-name" type="text" placeholder="Payee name">
-        <label>Category</label>
-        <input class="filter-input account-form-input" id="payee-form-category" type="text" placeholder="Main category" list="cat-list" oninput="onPayeeCategoryInput()">
-        <label>Subcategory</label>
-        <input class="filter-input account-form-input" id="payee-form-subcategory" type="text" placeholder="Subcategory (optional)" list="subcat-list">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-          <button type="button" class="btn-ac btn-sm" onclick="savePayeeForm()">Save Payee</button>
-          <button type="button" class="btn-ol btn-sm" onclick="resetPayeeForm()">New Payee</button>
-        </div>
-      </div>
-    </section>
+    </div>
+
+    <div class="cat-scope-divider"></div>
+
+    <p style="font-size:12px;color:var(--mu);margin:0 0 10px">Apply to:</p>
+    <div class="cat-scope-options">
+      <label class="cat-scope-opt">
+        <input type="radio" name="cat-scope" value="txn_only" checked>
+        <span>Just this transaction</span>
+      </label>
+      <label class="cat-scope-opt">
+        <input type="radio" name="cat-scope" value="payee_fwd">
+        <span id="cat-scope-label-fwd"></span>
+      </label>
+      <label class="cat-scope-opt">
+        <input type="radio" name="cat-scope" value="payee_all">
+        <span id="cat-scope-label-all"></span>
+      </label>
+      <label class="cat-scope-opt" id="cat-scope-matching-row">
+        <input type="radio" name="cat-scope" value="payee_matching">
+        <span id="cat-scope-label-matching"></span>
+      </label>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn-ol btn-sm" onclick="closeCatScope()">Cancel</button>
+      <button class="btn-ac btn-sm" onclick="catScopeApply()">Apply</button>
+    </div>
   </div>
 </div>
 
 <datalist id="cat-list"></datalist>
 <datalist id="subcat-list"></datalist>
-<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-payees7"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ config.APP_VERSION }}-cat8"></script>
 </body>
 </html>

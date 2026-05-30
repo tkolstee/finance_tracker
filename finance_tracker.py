@@ -95,7 +95,7 @@ def D(row):
 
 
 TXN_SELECT = (
-    "SELECT t.id,t.month,t.date,t.payee,t.category,t.amount,t.entry_type,t.status,"
+    "SELECT t.id,t.month,t.date,t.payee,t.category,t.subcategory,t.amount,t.entry_type,t.status,"
     "t.recurs_monthly,t.is_automatic,t.is_adhoc,t.notes,t.sort_order,t.account_id,"
     "a.name AS account_name,t.transfer_group_id,t.transfer_role,t.transfer_account_id,"
     "ta.name AS transfer_account_name "
@@ -118,15 +118,15 @@ def fetch_txn(c, tid):
     return c.execute(f"{TXN_SELECT} WHERE t.id=?", (tid,)).fetchone()
 
 
-def insert_txn_row(c, *, month, date, payee, category, amount, entry_type, status,
+def insert_txn_row(c, *, month, date, payee, category, subcategory="", amount, entry_type, status,
                    recurs_monthly, is_automatic, is_adhoc, notes, sort_order,
                    account_id, transfer_group_id=None, transfer_role="normal",
                    transfer_account_id=None):
     cur = c.execute(
-        "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
+        "INSERT INTO transactions(month,date,payee,category,subcategory,amount,entry_type,"
         "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id,"
-        "transfer_group_id,transfer_role,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (month, date, payee, category, float(amount), entry_type, status,
+        "transfer_group_id,transfer_role,transfer_account_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (month, date, payee, category, subcategory or "", float(amount), entry_type, status,
          int(recurs_monthly), int(is_automatic), int(is_adhoc), notes, int(sort_order),
          int(account_id), transfer_group_id, transfer_role, transfer_account_id)
     )
@@ -153,7 +153,7 @@ def update_transfer_pair(c, txn, fields):
         elif key == "transfer_account_id" or key == "account_id":
             peer_fields.append("transfer_account_id=?")
             peer_vals.append(value)
-        elif key in ("date", "category", "status", "notes", "recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
+        elif key in ("date", "category", "subcategory", "status", "notes", "recurs_monthly", "is_automatic", "is_adhoc", "sort_order"):
             peer_fields.append(f"{key}=?")
             peer_vals.append(value)
     if peer_fields:
@@ -699,7 +699,8 @@ def add_txn(month):
     if transfer_account_id:
         source_id = insert_txn_row(
             c, month=month, date=d.get("date"), payee=d.get("payee", ""),
-            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            category=d.get("category", ""), subcategory=d.get("subcategory", ""),
+            amount=d.get("amount", 0), entry_type=entry_type,
             status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
             is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
             notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=account_id,
@@ -708,7 +709,8 @@ def add_txn(month):
         )
         insert_txn_row(
             c, month=month, date=d.get("date"), payee=d.get("payee", ""),
-            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=opposite_entry_type(entry_type),
+            category=d.get("category", ""), subcategory=d.get("subcategory", ""),
+            amount=d.get("amount", 0), entry_type=opposite_entry_type(entry_type),
             status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
             is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
             notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=int(transfer_account_id),
@@ -719,7 +721,8 @@ def add_txn(month):
     else:
         new_id = insert_txn_row(
             c, month=month, date=d.get("date"), payee=d.get("payee", ""),
-            category=d.get("category", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            category=d.get("category", ""), subcategory=d.get("subcategory", ""),
+            amount=d.get("amount", 0), entry_type=entry_type,
             status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
             is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
             notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=account_id,
@@ -776,7 +779,8 @@ def update_txn(tid):
             )
             insert_txn_row(
                 c, month=txn["month"], date=txn["date"], payee=new_payee,
-                category=txn["category"], amount=txn["amount"],
+                category=txn["category"], subcategory=txn["subcategory"] if "subcategory" in txn.keys() else "",
+                amount=txn["amount"],
                 entry_type=opposite_entry_type(entry_type),
                 status=txn["status"], recurs_monthly=txn["recurs_monthly"],
                 is_automatic=txn["is_automatic"], is_adhoc=txn["is_adhoc"],
@@ -787,7 +791,7 @@ def update_txn(tid):
 
     # Update standard fields
     fields, vals = [], []
-    for f in ["date", "payee", "category", "amount", "entry_type", "status",
+    for f in ["date", "payee", "category", "subcategory", "amount", "entry_type", "status",
               "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order", "account_id"]:
         if f not in d:
             continue
@@ -809,7 +813,7 @@ def update_txn(tid):
         txn = c.execute("SELECT * FROM transactions WHERE id=?", (tid,)).fetchone()
         if txn and txn["transfer_group_id"]:
             transfer_fields = {}
-            for f in ["date", "category", "amount", "entry_type", "status",
+            for f in ["date", "category", "subcategory", "amount", "entry_type", "status",
                       "recurs_monthly", "is_automatic", "is_adhoc", "notes", "sort_order"]:
                 if f in d:
                     transfer_fields[f] = d[f]
@@ -861,15 +865,17 @@ def add_txn_any():
     if transfer_account_id:
         source_id = insert_txn_row(
             c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
-            amount=d.get("amount", 0), entry_type=entry_type, status=d.get("status", "estimated"),
-            recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
-            is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
+            subcategory=d.get("subcategory", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
+            is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
+            notes=d.get("notes"), sort_order=d.get("sort_order", 0),
             account_id=account_id, transfer_group_id=transfer_group_id, transfer_role="source",
             transfer_account_id=int(transfer_account_id),
         )
         insert_txn_row(
             c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
-            amount=d.get("amount", 0), entry_type=opposite_entry_type(entry_type), status=d.get("status", "estimated"),
+            subcategory=d.get("subcategory", ""), amount=d.get("amount", 0),
+            entry_type=opposite_entry_type(entry_type), status=d.get("status", "estimated"),
             recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
             is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
             account_id=int(transfer_account_id), transfer_group_id=transfer_group_id,
@@ -879,10 +885,10 @@ def add_txn_any():
     else:
         new_id = insert_txn_row(
             c, month=month, date=date, payee=d.get("payee", ""), category=d.get("category", ""),
-            amount=d.get("amount", 0), entry_type=entry_type, status=d.get("status", "estimated"),
-            recurs_monthly=d.get("recurs_monthly", 0), is_automatic=d.get("is_automatic", 0),
-            is_adhoc=d.get("is_adhoc", 0), notes=d.get("notes"), sort_order=d.get("sort_order", 0),
-            account_id=account_id,
+            subcategory=d.get("subcategory", ""), amount=d.get("amount", 0), entry_type=entry_type,
+            status=d.get("status", "estimated"), recurs_monthly=d.get("recurs_monthly", 0),
+            is_automatic=d.get("is_automatic", 0), is_adhoc=d.get("is_adhoc", 0),
+            notes=d.get("notes"), sort_order=d.get("sort_order", 0), account_id=account_id,
         )
     c.commit()
     return jsonify(D(fetch_txn(c, new_id))), 201
@@ -994,10 +1000,10 @@ def init_month(month):
                         c.execute("UPDATE transactions SET date=? WHERE id=?", (td, existing[i]["id"]))
                 else:
                     c.execute(
-                        "INSERT INTO transactions(month,date,payee,category,amount,entry_type,"
+                        "INSERT INTO transactions(month,date,payee,category,subcategory,amount,entry_type,"
                         "status,recurs_monthly,is_automatic,is_adhoc,notes,sort_order,account_id)"
-                        " VALUES(?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
-                        (month, td, payee, tmpl["category"], float(tmpl["amount"]), etype,
+                        " VALUES(?,?,?,?,?,?,?,'estimated',1,?,0,?,?,?)",
+                        (month, td, payee, tmpl["category"], "", float(tmpl["amount"]), etype,
                              int(tmpl["is_automatic"]), tmpl["notes"], i, int(tmpl["account_id"] or default_account_id(c))))
     c.commit()
     n = c.execute("SELECT COUNT(*) n FROM transactions WHERE month=?", (month,)).fetchone()["n"]
@@ -1236,10 +1242,28 @@ def delete_account(aid):
 @require_auth
 def list_categories():
     c = get_user_db()
-    rows = c.execute("""SELECT DISTINCT category FROM (
-        SELECT category FROM transactions WHERE category!=''
-        UNION SELECT category FROM templates WHERE category!='') ORDER BY category""").fetchall()
-    return jsonify([r["category"] for r in rows])
+    rows = c.execute("""
+        SELECT category, subcategory FROM (
+            SELECT category, subcategory FROM transactions WHERE category!=''
+            UNION
+            SELECT category, subcategory FROM payees WHERE category!=''
+            UNION
+            SELECT category, '' AS subcategory FROM templates WHERE category!=''
+        ) GROUP BY category, subcategory
+        ORDER BY category, subcategory
+    """).fetchall()
+    hierarchy = {}
+    for row in rows:
+        cat = row["category"]
+        sub = row["subcategory"] or ""
+        if cat not in hierarchy:
+            hierarchy[cat] = []
+        if sub and sub not in hierarchy[cat]:
+            hierarchy[cat].append(sub)
+    return jsonify([
+        {"category": cat, "subcategories": sorted(subs)}
+        for cat, subs in sorted(hierarchy.items())
+    ])
 
 
 def _prune_orphan_payees(c):
@@ -1302,6 +1326,37 @@ def update_payee(pid):
         return jsonify({"error": str(e)}), 400
     row = c.execute("SELECT id, name, category, subcategory FROM payees WHERE id=?", (pid,)).fetchone()
     return jsonify(D(row))
+
+
+@app.route("/api/payees/<int:pid>/category", methods=["PUT"])
+@require_auth
+def update_payee_category(pid):
+    """Update a payee's default category and optionally apply to existing transactions."""
+    d = request.get_json() or {}
+    c = get_user_db()
+    payee_row = c.execute("SELECT * FROM payees WHERE id=?", (pid,)).fetchone()
+    if not payee_row:
+        return jsonify({"error": "not found"}), 404
+    new_category = (d.get("category") or "").strip()
+    new_subcategory = (d.get("subcategory") or "").strip()
+    scope = d.get("scope", "none")  # 'none' | 'all' | 'matching_old'
+    old_category = (d.get("old_category") or "").strip()
+    old_subcategory = (d.get("old_subcategory") or "").strip()
+    payee_name = payee_row["name"]
+    c.execute("UPDATE payees SET category=?, subcategory=? WHERE id=?",
+              (new_category, new_subcategory, pid))
+    if scope == "all":
+        c.execute(
+            "UPDATE transactions SET category=?, subcategory=? WHERE payee=?",
+            (new_category, new_subcategory, payee_name)
+        )
+    elif scope == "matching_old":
+        c.execute(
+            "UPDATE transactions SET category=?, subcategory=? WHERE payee=? AND category=? AND subcategory=?",
+            (new_category, new_subcategory, payee_name, old_category, old_subcategory)
+        )
+    c.commit()
+    return jsonify({"ok": True, "scope": scope})
 
 
 @app.route("/api/payees/<int:pid>", methods=["DELETE"])
