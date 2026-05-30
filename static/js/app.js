@@ -346,13 +346,28 @@ function calculateTransferAwareTotals(rows){
   let incTotal = 0;
   let expTotal = 0;
   for(const row of (rows || [])){
-    const sign = row.entry_type === 'credit' ? 1 : -1;
     const amount = parseFloat(row.amount || 0);
-    net += sign * amount;
-    if(row.entry_type === 'credit') incTotal += amount;
-    else expTotal += amount;
-    if(row.transfer_account_id && hasSelectedAccount(row.account_id) && hasSelectedAccount(row.transfer_account_id)){
-      net -= sign * amount;
+    if(row.transfer_account_id){
+      const sourceSelected = hasSelectedAccount(row.account_id);
+      const destSelected = hasSelectedAccount(row.transfer_account_id);
+      if(sourceSelected && destSelected){
+        // Both sides visible: internal transfer nets to zero
+      } else if(destSelected && !sourceSelected){
+        // Only destination visible: incoming money is positive
+        net += amount;
+        incTotal += amount;
+      } else {
+        // Only source visible: use stored direction (outgoing is negative for debits)
+        const sign = row.entry_type === 'credit' ? 1 : -1;
+        net += sign * amount;
+        if(row.entry_type === 'credit') incTotal += amount;
+        else expTotal += amount;
+      }
+    } else {
+      const sign = row.entry_type === 'credit' ? 1 : -1;
+      net += sign * amount;
+      if(row.entry_type === 'credit') incTotal += amount;
+      else expTotal += amount;
     }
   }
   return {net, incTotal, expTotal};
