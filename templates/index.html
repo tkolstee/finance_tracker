@@ -508,17 +508,36 @@
 
 <div class="toast-area" id="ta"></div>
 
+<!-- Payee picker modal -->
+<div class="modal-bg" id="payee-picker-modal" onclick="payeePickerBgClick(event)">
+  <div class="modal-box cat-picker-box" onclick="event.stopPropagation()">
+    <h4>Select Payee</h4>
+    <div class="cat-picker-search-row">
+      <input type="text" class="cat-picker-search" id="payee-picker-search"
+             placeholder="Search or type a new payee…" autocomplete="off"
+             oninput="filterPayeePicker()"
+             onkeydown="if(event.key==='Enter'&&!document.getElementById('payee-picker-create-btn').disabled){event.preventDefault();payeePickerCreate();}">
+      <button class="btn-ac btn-sm" id="payee-picker-create-btn" onclick="payeePickerCreate()" disabled>New</button>
+    </div>
+    <div class="cat-picker-list" id="payee-picker-list"></div>
+    <div style="text-align:right;margin-top:10px">
+      <button class="btn-ol btn-sm" onclick="closePayeePicker()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Category picker modal -->
 <div class="modal-bg" id="cat-picker-modal" onclick="catPickerBgClick(event)">
   <div class="modal-box cat-picker-box" onclick="event.stopPropagation()">
     <h4>Select Category</h4>
-    <input type="text" class="cat-picker-search" id="cat-picker-search" placeholder="Search categories…" oninput="filterCatPicker()" autocomplete="off">
-    <div class="cat-picker-list" id="cat-picker-list"></div>
-    <div class="cat-picker-new-row">
-      <input type="text" class="cat-picker-new-inp" id="cat-picker-new-top" placeholder="New top-level category…" autocomplete="off"
-             onkeydown="if(event.key==='Enter'){event.preventDefault();catPickerAddTop();}">
-      <button class="btn-ol btn-sm" onclick="catPickerAddTop()">Add</button>
+    <div class="cat-picker-search-row">
+      <input type="text" class="cat-picker-search" id="cat-picker-search"
+             placeholder="Search or type a new category…" autocomplete="off"
+             oninput="filterCatPicker()"
+             onkeydown="if(event.key==='Enter'&&!document.getElementById('cat-picker-create-btn').disabled){event.preventDefault();catPickerAddTop();}">
+      <button class="btn-ac btn-sm" id="cat-picker-create-btn" onclick="catPickerAddTop()" disabled>New</button>
     </div>
+    <div class="cat-picker-list" id="cat-picker-list"></div>
     <div style="text-align:right;margin-top:10px">
       <button class="btn-ol btn-sm" onclick="closeCatPicker()">Cancel</button>
     </div>
@@ -536,7 +555,7 @@
         <span class="cat-scope-info-val" id="cat-scope-txn-prev"></span>
       </div>
       <div class="cat-scope-info-row">
-        <span class="cat-scope-info-lbl"><span id="cat-scope-payee-lbl"></span>'s default:</span>
+        <span class="cat-scope-info-lbl" id="cat-scope-payee-lbl-row"></span>
         <span class="cat-scope-info-val" id="cat-scope-payee-default"></span>
       </div>
       <div class="cat-scope-info-row">
@@ -551,16 +570,20 @@
     <p style="font-size:12px;color:var(--mu);margin:0 0 10px">Apply to:</p>
     <div class="cat-scope-options">
       <label class="cat-scope-opt">
-        <input type="radio" name="cat-scope" value="txn_only" checked> Just this transaction
+        <input type="radio" name="cat-scope" value="txn_only" checked>
+        <span>Just this transaction</span>
       </label>
       <label class="cat-scope-opt">
-        <input type="radio" name="cat-scope" value="payee_fwd"> Update <strong id="cat-scope-payee-name"></strong>'s default (won't change past transactions)
+        <input type="radio" name="cat-scope" value="payee_fwd">
+        <span id="cat-scope-label-fwd"></span>
       </label>
       <label class="cat-scope-opt">
-        <input type="radio" name="cat-scope" value="payee_all"> Update <strong id="cat-scope-payee-name2"></strong>'s default + apply to <em>all</em> past transactions for this payee
+        <input type="radio" name="cat-scope" value="payee_all">
+        <span id="cat-scope-label-all"></span>
       </label>
       <label class="cat-scope-opt" id="cat-scope-matching-row">
-        <input type="radio" name="cat-scope" value="payee_matching"> Update <strong id="cat-scope-payee-name3"></strong>'s default + apply only to past transactions currently categorized as <em id="cat-scope-old-cat"></em>
+        <input type="radio" name="cat-scope" value="payee_matching">
+        <span id="cat-scope-label-matching"></span>
       </label>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">

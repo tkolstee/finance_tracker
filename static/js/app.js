@@ -1728,6 +1728,25 @@ function makeEC(txn, field, type, extraClass, section){
     };
     return td;
   }
+  if(field==='payee' && !txn.transfer_account_id){
+    const td=document.createElement('td'); td.className='editable '+(extraClass||'');
+    let span;
+    if(section) span=makePayeeSpan(txn,section);
+    else{ span=document.createElement('span'); span.textContent=txn.payee||''; }
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
+      openPayeePicker(txn.payee||'', (payeeName)=>{
+        if(payeeName===txn.payee) return;
+        if(section){ const s=makePayeeSpan({...txn,payee:payeeName},section); span.replaceWith(s); }
+        else span.textContent=payeeName;
+        const {category,subcategory}=getPayeeCatObj(payeeName);
+        updatePayeeAndTransfer(txn.id, payeeName, null,
+          category?{category,subcategory}:{});
+      });
+    };
+    return td;
+  }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
   let span;
@@ -2372,6 +2391,25 @@ function makeAllEC(txn,field,type,extraClass,section){
     };
     return td;
   }
+  if(field==='payee' && !txn.transfer_account_id){
+    const td=document.createElement('td'); td.className='editable '+(extraClass||'');
+    let span;
+    if(section) span=makePayeeAllSpan(txn,section);
+    else{ span=document.createElement('span'); span.textContent=txn.payee||''; }
+    td.appendChild(span);
+    td.onclick=()=>{
+      if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
+      openPayeePicker(txn.payee||'', (payeeName)=>{
+        if(payeeName===txn.payee) return;
+        if(section){ const s=makePayeeAllSpan({...txn,payee:payeeName},section); span.replaceWith(s); }
+        else span.textContent=payeeName;
+        const {category,subcategory}=getPayeeCatObj(payeeName);
+        updateAllPayeeAndTransfer(txn.id, payeeName, null,
+          category?{category,subcategory}:{});
+      });
+    };
+    return td;
+  }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
   let span;
@@ -3007,6 +3045,84 @@ function clearGhostAll(){
   const catEl=document.getElementById('gia-cat');
   if(catEl){ catEl.value=''; catEl.dataset.cat=''; catEl.dataset.subcat=''; catEl.style.color='var(--mu)'; }
 }
+// ── Payee Picker ─────────────────────────────────────────────────────────────
+let _payeePickerCallback = null;
+
+function openPayeePicker(currentPayee, onSelect){
+  _payeePickerCallback = onSelect;
+  const srch = document.getElementById('payee-picker-search');
+  if(srch){ srch.value = ''; }
+  const btn = document.getElementById('payee-picker-create-btn');
+  if(btn) btn.disabled = true;
+  renderPayeePickerList('');
+  document.getElementById('payee-picker-modal').classList.add('open');
+  if(srch) setTimeout(()=>srch.focus(), 50);
+}
+
+function closePayeePicker(){
+  document.getElementById('payee-picker-modal').classList.remove('open');
+  _payeePickerCallback = null;
+}
+
+function payeePickerBgClick(e){
+  if(e.target===document.getElementById('payee-picker-modal')) closePayeePicker();
+}
+
+function filterPayeePicker(){
+  const q = (document.getElementById('payee-picker-search')?.value||'').toLowerCase();
+  renderPayeePickerList(q);
+  const btn = document.getElementById('payee-picker-create-btn');
+  if(btn){
+    const typed = (document.getElementById('payee-picker-search')?.value||'').trim();
+    const exactMatch = typed && [...payees].some(p=>p.toLowerCase()===typed.toLowerCase());
+    btn.disabled = !typed || exactMatch;
+  }
+}
+
+function renderPayeePickerList(q){
+  const list = document.getElementById('payee-picker-list');
+  if(!list) return;
+  list.innerHTML = '';
+  const sorted = [...payees].filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  const filtered = q ? sorted.filter(name=>name.toLowerCase().includes(q)) : sorted;
+  if(!filtered.length){
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:12px 10px;color:var(--mu);font-size:12px';
+    empty.textContent = q ? 'No matching payees' : 'No payees yet — type above to create one';
+    list.appendChild(empty);
+    return;
+  }
+  filtered.forEach(name=>{
+    const {category, subcategory} = getPayeeCatObj(name);
+    const catLabel = formatCatDisplay(category, subcategory) || UNCAT_LABEL;
+    const row = document.createElement('div');
+    row.className = 'ppick-row';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ppick-name';
+    nameSpan.textContent = name;
+    const catSpan = document.createElement('span');
+    catSpan.className = 'ppick-cat';
+    catSpan.textContent = catLabel;
+    row.appendChild(nameSpan);
+    row.appendChild(catSpan);
+    row.onclick = () => payeePickerSelect(name);
+    list.appendChild(row);
+  });
+}
+
+function payeePickerSelect(name){
+  const cb = _payeePickerCallback;
+  closePayeePicker();
+  if(cb) cb(name);
+}
+
+function payeePickerCreate(){
+  const srch = document.getElementById('payee-picker-search');
+  const name = (srch?.value||'').trim();
+  if(!name) return;
+  payeePickerSelect(name);
+}
+
 // ── Category Picker ──────────────────────────────────────────────────────────
 let _catPickerCtx = null; // {txnId, payee, oldCategory, oldSubcategory, viewType, onApply}
 let _catPickerExpanded = new Set();
@@ -3016,9 +3132,9 @@ function openCategoryPicker(txnId, currentCat, currentSubcat, payee, viewType, o
   _catPickerExpanded.clear();
   if(currentCat) _catPickerExpanded.add(currentCat);
   const srch = document.getElementById('cat-picker-search');
-  const newTop = document.getElementById('cat-picker-new-top');
   if(srch) srch.value='';
-  if(newTop) newTop.value='';
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn) btn.disabled = true;
   renderCatPickerList('');
   document.getElementById('cat-picker-modal').classList.add('open');
   if(srch) setTimeout(()=>srch.focus(),50);
@@ -3034,7 +3150,14 @@ function catPickerBgClick(e){
 }
 
 function filterCatPicker(){
-  renderCatPickerList((document.getElementById('cat-picker-search')?.value||'').toLowerCase());
+  const q = (document.getElementById('cat-picker-search')?.value||'').toLowerCase();
+  renderCatPickerList(q);
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn){
+    const typedRaw = (document.getElementById('cat-picker-search')?.value||'').trim();
+    const exactMatch = typedRaw && getCategoryHierarchy().some(h=>h.category.toLowerCase()===typedRaw.toLowerCase());
+    btn.disabled = !typedRaw || exactMatch;
+  }
 }
 
 function renderCatPickerList(q){
@@ -3132,10 +3255,9 @@ function catPickerSelect(category, subcategory){
 }
 
 function catPickerAddTop(){
-  const inp = document.getElementById('cat-picker-new-top');
-  const cat = (inp?.value||'').trim();
+  const srch = document.getElementById('cat-picker-search');
+  const cat = (srch?.value||'').trim();
   if(!cat) return;
-  if(inp) inp.value='';
   catPickerSelect(cat, '');
 }
 
@@ -3164,29 +3286,38 @@ function openCatScope(payee, newCat, newSub, payeeDfltCat, payeeDfltSub,
   document.getElementById('cat-scope-modal').classList.add('open');
 }
 
+const UNCAT_LABEL = 'Uncategorized';
+
 function updateCatScopeDisplay(){
   const ctx = _catScopeCtx;
   if(!ctx) return;
   const el = id => document.getElementById(id);
-  ['cat-scope-payee-title','cat-scope-payee-lbl',
-   'cat-scope-payee-name','cat-scope-payee-name2','cat-scope-payee-name3'].forEach(id=>{
-    const e=el(id); if(e) e.textContent=ctx.payee;
-  });
-  if(el('cat-scope-txn-prev'))
-    el('cat-scope-txn-prev').textContent = formatCatDisplay(ctx.txnPrevCategory, ctx.txnPrevSubcategory);
-  if(el('cat-scope-payee-default'))
-    el('cat-scope-payee-default').textContent = formatCatDisplay(ctx.payeeDefaultCategory, ctx.payeeDefaultSubcategory);
-  if(el('cat-scope-new-cat'))
-    el('cat-scope-new-cat').textContent = formatCatDisplay(ctx.newCategory, ctx.newSubcategory);
-  // "matching old" shows payee's current default, since that's what we'd filter on
-  if(el('cat-scope-old-cat'))
-    el('cat-scope-old-cat').textContent =
-      formatCatDisplay(ctx.payeeDefaultCategory, ctx.payeeDefaultSubcategory) || '(uncategorized)';
-  // Hide "matching old" row when payee has no current default to match
+  const p = ctx.payee;
+  const dfltLabel = formatCatDisplay(ctx.payeeDefaultCategory, ctx.payeeDefaultSubcategory) || UNCAT_LABEL;
+  const newLabel  = formatCatDisplay(ctx.newCategory, ctx.newSubcategory) || UNCAT_LABEL;
+  const prevLabel = formatCatDisplay(ctx.txnPrevCategory, ctx.txnPrevSubcategory) || UNCAT_LABEL;
+
+  if(el('cat-scope-payee-title'))   el('cat-scope-payee-title').textContent   = p;
+  if(el('cat-scope-payee-lbl-row')) el('cat-scope-payee-lbl-row').textContent = `${p}'s default:`;
+  if(el('cat-scope-txn-prev'))      el('cat-scope-txn-prev').textContent      = prevLabel;
+  if(el('cat-scope-payee-default')) el('cat-scope-payee-default').textContent = dfltLabel;
+  if(el('cat-scope-new-cat'))       el('cat-scope-new-cat').textContent       = newLabel;
+
+  // Radio label text — full strings, no embedded elements
+  if(el('cat-scope-label-fwd'))
+    el('cat-scope-label-fwd').textContent =
+      `Update ${p}'s default (won't change past transactions)`;
+  if(el('cat-scope-label-all'))
+    el('cat-scope-label-all').textContent =
+      `Update ${p}'s default and apply to all past transactions for this payee`;
+  if(el('cat-scope-label-matching'))
+    el('cat-scope-label-matching').textContent =
+      `Update ${p}'s default and only apply to past transactions currently categorized as "${dfltLabel}"`;
+
+  // "matching old" is always shown — Uncategorized is a valid state to match against
   const matchingRow = el('cat-scope-matching-row');
-  if(matchingRow)
-    matchingRow.style.display = (ctx.payeeDefaultCategory||ctx.payeeDefaultSubcategory) ? '' : 'none';
-  // Default radio
+  if(matchingRow) matchingRow.style.display = '';
+
   const radio = document.querySelector('input[name="cat-scope"][value="txn_only"]');
   if(radio) radio.checked = true;
 }
@@ -3204,9 +3335,9 @@ function catScopeChangeCategory(){
     viewType: ctx.viewType, onApply: ctx.onApply, returnToScope: true
   };
   const srch = document.getElementById('cat-picker-search');
-  const newTop = document.getElementById('cat-picker-new-top');
   if(srch) srch.value='';
-  if(newTop) newTop.value='';
+  const btn = document.getElementById('cat-picker-create-btn');
+  if(btn) btn.disabled = true;
   renderCatPickerList('');
   document.getElementById('cat-picker-modal').classList.add('open');
   if(srch) setTimeout(()=>srch.focus(), 50);

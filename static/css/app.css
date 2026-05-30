@@ -16,9 +16,11 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 
 /* Category picker modal */
 .cat-picker-box{max-width:440px;width:94%}
-.cat-picker-search{width:100%;background:var(--bg);border:1px solid var(--bd);border-radius:6px;
-                   color:var(--tx);font-size:13px;padding:6px 10px;margin-bottom:10px;outline:none}
+.cat-picker-search-row{display:flex;gap:6px;align-items:center;margin-bottom:10px}
+.cat-picker-search{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:6px;
+                   color:var(--tx);font-size:13px;padding:6px 10px;outline:none;min-width:0}
 .cat-picker-search:focus{border-color:var(--ac)}
+.btn-ac:disabled,.btn-ol:disabled{opacity:0.38;cursor:not-allowed}
 .cat-picker-list{max-height:280px;overflow-y:auto;border:1px solid var(--bd);border-radius:6px;margin-bottom:10px}
 .cpick-top{display:flex;align-items:center;gap:6px;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--bd)}
 .cpick-top:last-child{border-bottom:none}
@@ -29,13 +31,16 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 .cpick-sub:last-child{border-bottom:none}
 .cpick-sub:hover{background:rgba(79,126,248,.08);color:var(--tx)}
 .cpick-add-sub{display:flex;gap:6px;padding:5px 10px 5px 28px}
+/* Payee picker list items */
+.ppick-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+           padding:7px 12px;cursor:pointer;border-bottom:1px solid var(--bd)}
+.ppick-row:last-child{border-bottom:none}
+.ppick-row:hover{background:rgba(79,126,248,.08)}
+.ppick-name{font-weight:500}
+.ppick-cat{font-size:11px;color:var(--mu);white-space:nowrap}
 .cpick-add-inp{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:5px;
                color:var(--tx);font-size:12px;padding:3px 7px;outline:none}
 .cpick-add-inp:focus{border-color:var(--ac)}
-.cat-picker-new-row{display:flex;gap:6px;align-items:center}
-.cat-picker-new-inp{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:5px;
-                    color:var(--tx);font-size:12px;padding:4px 8px;outline:none}
-.cat-picker-new-inp:focus{border-color:var(--ac)}
 
 /* Payee-category scope dialog */
 .cat-scope-box{max-width:500px;width:94%}
