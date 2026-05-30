@@ -837,12 +837,17 @@ async function refreshSuggestions(){
     fetch('/api/categories').then(r=>r.json()).catch(()=>[]),
     fetch('/api/payees').then(r=>r.json()).catch(()=>[]),
   ]);
-  categories=new Set(cats.filter(Boolean));
-  payeesList=pList;
+  // Reset both sets so pruned payees/categories don't survive past deletions
+  payees=new Set();
   payeesMap={};
+  payeesList=pList;
+  categories=new Set(cats.map(h=>h?.category).filter(Boolean));
   pList.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
-  updateDL();
+  // Re-seed from currently loaded transactions so in-session payees aren't lost
+  (transactions||[]).forEach(t=>{ if(t.payee) payees.add(t.payee); });
+  (allTransactions||[]).forEach(t=>{ if(t.payee) payees.add(t.payee); });
   templates.forEach(t=>{if(t.category)categories.add(t.category);if(t.payee)payees.add(t.payee);});
+  updateDL();
 }
 
 function getTxnCategory(txn){
@@ -3590,7 +3595,7 @@ function initGhostRows(){
     fetch('/api/payees').then(r=>r.json()).catch(()=>[]),
   ]);
   await loadAccounts();
-  cats.forEach(c=>c&&addCat(c));
+  cats.forEach(h=>{ if(h?.category) addCat(h.category); });
   payeesList=payeeObjects;
   payeesMap={};
   payeeObjects.forEach(p=>{ if(p&&p.name){ payees.add(p.name); payeesMap[p.name]=fmtCat(p); } });
