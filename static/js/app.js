@@ -1728,31 +1728,38 @@ function makeEC(txn, field, type, extraClass, section){
     };
     return td;
   }
-  if(field==='payee' && !txn.transfer_account_id){
+  if(field==='payee'){
     const td=document.createElement('td'); td.className='editable '+(extraClass||'');
     let span;
     if(section) span=makePayeeSpan(txn,section);
-    else{ span=document.createElement('span'); span.textContent=txn.payee||''; }
+    else{
+      span=document.createElement('span');
+      span.textContent=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn.payee||'');
+    }
     td.appendChild(span);
     td.onclick=()=>{
       if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
-      openPayeePicker(txn.payee||'', (payeeName)=>{
-        if(payeeName===txn.payee) return;
-        if(section){ const s=makePayeeSpan({...txn,payee:payeeName},section); span.replaceWith(s); }
-        else span.textContent=payeeName;
-        const {category,subcategory}=getPayeeCatObj(payeeName);
-        updatePayeeAndTransfer(txn.id, payeeName, null,
-          category?{category,subcategory}:{});
+      openPayeePicker(txn.transfer_account_id ? '' : (txn.payee||''), (payeeName, accountId)=>{
+        if(accountId){
+          if(String(accountId)===String(txn.transfer_account_id)) return;
+          if(section){ const s=makePayeeSpan({...txn,transfer_account_id:accountId},section); span.replaceWith(s); }
+          else span.textContent=getAccountName(accountId)||payeeName;
+          updatePayeeAndTransfer(txn.id, payeeName, accountId);
+        } else {
+          if(payeeName===txn.payee && !txn.transfer_account_id) return;
+          if(section){ const s=makePayeeSpan({...txn,payee:payeeName,transfer_account_id:null},section); span.replaceWith(s); }
+          else span.textContent=payeeName;
+          const {category,subcategory}=getPayeeCatObj(payeeName);
+          updatePayeeAndTransfer(txn.id, payeeName, null, category?{category,subcategory}:{});
+        }
       });
     };
     return td;
   }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
-  let span;
-  if(field==='payee'&&section) span=makePayeeSpan(txn,section);
-  else{
-    span=document.createElement('span');
+  const span=document.createElement('span');
+  {
     if(field==='amount'){
       span.innerHTML=fmtTxnAmt(txn.amount, txn.entry_type);
     }else if(field==='entry_type'){
@@ -2391,31 +2398,38 @@ function makeAllEC(txn,field,type,extraClass,section){
     };
     return td;
   }
-  if(field==='payee' && !txn.transfer_account_id){
+  if(field==='payee'){
     const td=document.createElement('td'); td.className='editable '+(extraClass||'');
     let span;
     if(section) span=makePayeeAllSpan(txn,section);
-    else{ span=document.createElement('span'); span.textContent=txn.payee||''; }
+    else{
+      span=document.createElement('span');
+      span.textContent=txn.transfer_account_id ? getAccountName(txn.transfer_account_id) : (txn.payee||'');
+    }
     td.appendChild(span);
     td.onclick=()=>{
       if(document.getElementById('payee-picker-modal')?.classList.contains('open')) return;
-      openPayeePicker(txn.payee||'', (payeeName)=>{
-        if(payeeName===txn.payee) return;
-        if(section){ const s=makePayeeAllSpan({...txn,payee:payeeName},section); span.replaceWith(s); }
-        else span.textContent=payeeName;
-        const {category,subcategory}=getPayeeCatObj(payeeName);
-        updateAllPayeeAndTransfer(txn.id, payeeName, null,
-          category?{category,subcategory}:{});
+      openPayeePicker(txn.transfer_account_id ? '' : (txn.payee||''), (payeeName, accountId)=>{
+        if(accountId){
+          if(String(accountId)===String(txn.transfer_account_id)) return;
+          if(section){ const s=makePayeeAllSpan({...txn,transfer_account_id:accountId},section); span.replaceWith(s); }
+          else span.textContent=getAccountName(accountId)||payeeName;
+          updateAllPayeeAndTransfer(txn.id, payeeName, accountId);
+        } else {
+          if(payeeName===txn.payee && !txn.transfer_account_id) return;
+          if(section){ const s=makePayeeAllSpan({...txn,payee:payeeName,transfer_account_id:null},section); span.replaceWith(s); }
+          else span.textContent=payeeName;
+          const {category,subcategory}=getPayeeCatObj(payeeName);
+          updateAllPayeeAndTransfer(txn.id, payeeName, null, category?{category,subcategory}:{});
+        }
       });
     };
     return td;
   }
   const td=document.createElement('td');
   td.className='editable '+(extraClass||'');
-  let span;
-  if(field==='payee'&&section) span=makePayeeAllSpan(txn,section);
-  else{
-    span=document.createElement('span');
+  const span=document.createElement('span');
+  {
     if(field==='amount') span.innerHTML=fmtTxnAmt(txn.amount,txn.entry_type);
     else if(field==='entry_type') span.textContent=txn.entry_type==='credit'?'Income':'Expense';
     else if(field==='date') span.textContent=txn.date||'';   // full YYYY-MM-DD
@@ -3083,16 +3097,24 @@ function renderPayeePickerList(q){
   const list = document.getElementById('payee-picker-list');
   if(!list) return;
   list.innerHTML = '';
-  const sorted = [...payees].filter(Boolean).sort((a,b)=>a.localeCompare(b));
-  const filtered = q ? sorted.filter(name=>name.toLowerCase().includes(q)) : sorted;
-  if(!filtered.length){
+  const accountNames = new Set(accounts.map(a=>(a.name||'').toLowerCase()));
+  const sorted = [...payees].filter(p=>p&&!accountNames.has(p.toLowerCase()))
+                            .sort((a,b)=>a.localeCompare(b));
+  const filteredPayees = q ? sorted.filter(name=>name.toLowerCase().includes(q)) : sorted;
+  const filteredAccounts = accounts.filter(a=>{
+    const n = (a.name||`Account ${a.id}`).toLowerCase();
+    return !q || n.includes(q);
+  });
+
+  if(!filteredPayees.length && !filteredAccounts.length){
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:12px 10px;color:var(--mu);font-size:12px';
-    empty.textContent = q ? 'No matching payees' : 'No payees yet — type above to create one';
+    empty.textContent = q ? 'No matching payees or accounts' : 'No payees yet — type above to create one';
     list.appendChild(empty);
     return;
   }
-  filtered.forEach(name=>{
+
+  filteredPayees.forEach(name=>{
     const {category, subcategory} = getPayeeCatObj(name);
     const catLabel = formatCatDisplay(category, subcategory) || UNCAT_LABEL;
     const row = document.createElement('div');
@@ -3105,22 +3127,44 @@ function renderPayeePickerList(q){
     catSpan.textContent = catLabel;
     row.appendChild(nameSpan);
     row.appendChild(catSpan);
-    row.onclick = () => payeePickerSelect(name);
+    row.onclick = () => payeePickerSelect(name, null);
     list.appendChild(row);
   });
+
+  if(filteredAccounts.length){
+    const section = document.createElement('div');
+    section.className = 'ppick-section';
+    section.textContent = 'Transfer to / from Account';
+    list.appendChild(section);
+    filteredAccounts.forEach(acc=>{
+      const name = acc.name || `Account ${acc.id}`;
+      const row = document.createElement('div');
+      row.className = 'ppick-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'ppick-name ppick-account';
+      nameSpan.textContent = name;
+      const typeSpan = document.createElement('span');
+      typeSpan.className = 'ppick-cat';
+      typeSpan.textContent = acc.type || 'account';
+      row.appendChild(nameSpan);
+      row.appendChild(typeSpan);
+      row.onclick = () => payeePickerSelect(name, acc.id);
+      list.appendChild(row);
+    });
+  }
 }
 
-function payeePickerSelect(name){
+function payeePickerSelect(name, accountId){
   const cb = _payeePickerCallback;
   closePayeePicker();
-  if(cb) cb(name);
+  if(cb) cb(name, accountId||null);
 }
 
 function payeePickerCreate(){
   const srch = document.getElementById('payee-picker-search');
   const name = (srch?.value||'').trim();
   if(!name) return;
-  payeePickerSelect(name);
+  payeePickerSelect(name, null);
 }
 
 // ── Category Picker ──────────────────────────────────────────────────────────
@@ -3424,8 +3468,19 @@ function initGhostRows(){
       catEl.style.color=category?'var(--tx)':'var(--mu)';
     };
     if(payeeEl){
-      payeeEl.addEventListener('input', ()=>{ delete payeeEl.dataset.transferAccountId; updateCat(); });
-      acBind(payeeEl,()=>getPayeeAutocompleteOptions(),opt=>{ payeeEl.value=opt?.label||opt||''; setTemplatePayeeSelection(payeeEl,opt); updateCat(); },null);
+      payeeEl.readOnly=true; payeeEl.style.cursor='pointer';
+      payeeEl.addEventListener('click',()=>{
+        const currentPayee = payeeEl.dataset.transferAccountId ? '' : payeeEl.value.trim();
+        openPayeePicker(currentPayee, (name, accountId)=>{
+          payeeEl.value=name;
+          if(accountId){
+            payeeEl.dataset.transferAccountId=String(accountId);
+          } else {
+            delete payeeEl.dataset.transferAccountId;
+            updateCat();
+          }
+        });
+      });
     }
     inputIds.forEach((id, i)=>{
       const el=document.getElementById(id); if(!el) return;
@@ -3483,8 +3538,19 @@ function initGhostRows(){
     giaCat.style.color=category?'var(--tx)':'var(--mu)';
   };
   if(giaPayee){
-    giaPayee.addEventListener('input', ()=>{ delete giaPayee.dataset.transferAccountId; updateGiaCat(); });
-    acBind(giaPayee,()=>getPayeeAutocompleteOptions(),opt=>{ giaPayee.value=opt?.label||opt||''; setTemplatePayeeSelection(giaPayee,opt); updateGiaCat(); },null);
+    giaPayee.readOnly=true; giaPayee.style.cursor='pointer';
+    giaPayee.addEventListener('click',()=>{
+      const currentPayee = giaPayee.dataset.transferAccountId ? '' : giaPayee.value.trim();
+      openPayeePicker(currentPayee, (name, accountId)=>{
+        giaPayee.value=name;
+        if(accountId){
+          giaPayee.dataset.transferAccountId=String(accountId);
+        } else {
+          delete giaPayee.dataset.transferAccountId;
+          updateGiaCat();
+        }
+      });
+    });
   }
   const giaIds=['gia-date','gia-payee','gia-cat','gia-amount','gia-notes'];
   giaIds.forEach((id, i)=>{

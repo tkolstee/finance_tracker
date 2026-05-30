@@ -38,6 +38,10 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;
 .ppick-row:hover{background:rgba(79,126,248,.08)}
 .ppick-name{font-weight:500}
 .ppick-cat{font-size:11px;color:var(--mu);white-space:nowrap}
+.ppick-section{padding:4px 12px 3px;font-size:10px;color:var(--mu);text-transform:uppercase;
+               letter-spacing:.5px;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);
+               background:var(--bg);user-select:none}
+.ppick-account{color:var(--ac)}
 .cpick-add-inp{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:5px;
                color:var(--tx);font-size:12px;padding:3px 7px;outline:none}
 .cpick-add-inp:focus{border-color:var(--ac)}
