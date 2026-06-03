@@ -3227,10 +3227,9 @@ function renderCatPickerList(q){
     const expandBtn = document.createElement('button');
     expandBtn.className = 'cpick-expand';
     expandBtn.title = expanded ? 'Collapse' : 'Expand';
-    expandBtn.textContent = hasSubs ? (expanded?'▼':'▶') : ' ';
+    expandBtn.textContent = expanded ? '▼' : '▶';
     expandBtn.onclick = e => {
       e.stopPropagation();
-      if(!hasSubs) return;
       if(_catPickerExpanded.has(category)) _catPickerExpanded.delete(category);
       else _catPickerExpanded.add(category);
       renderCatPickerList(document.getElementById('cat-picker-search')?.value?.toLowerCase()||'');
