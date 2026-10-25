@@ -79,6 +79,23 @@ When you add a schema change:
 
 Docker builds also carry the app version as image metadata and tag release images with the same SemVer value.
 
+## API Access
+
+Every endpoint under `/api/` accepts either a login session or an API key.
+
+To create a key, sign in and open **API Keys** in the top bar (`/keys`). Give the key a name; the key itself (`ftk_…`) is shown once and cannot be retrieved later, so store it somewhere safe. Send it on each request:
+
+```bash
+curl -H "Authorization: Bearer ftk_…" https://your-host/api/accounts
+```
+
+A key acts as the user who created it, with two limits:
+
+- It never has admin rights, even if its owner is an admin.
+- It cannot list, create, or revoke API keys. Managing keys requires a signed-in session.
+
+The keys page shows when each key was last used. Revoking a key takes effect immediately. Deleting a user deletes their keys. Only a SHA-256 hash of each key is stored.
+
 ## Run With Docker
 
 Finance Tracker can run in Docker with a persistent SQLite database volume.

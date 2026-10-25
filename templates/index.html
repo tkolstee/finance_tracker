@@ -24,6 +24,7 @@
     <button type="button" class="btn-ol btn-sm" onclick="showView('accounts')">Manage</button>
   </div>
   <span style="flex:1"></span>
+  <a href="/keys" style="color:var(--tx2);font-size:.78rem;text-decoration:none;padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'"><i class="bi bi-key me-1"></i>API Keys</a>
   {% if is_admin %}
   <a href="/admin" style="color:var(--tx2);font-size:.78rem;text-decoration:none;padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;transition:color .15s" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx2)'"><i class="bi bi-shield-lock me-1"></i>Admin</a>
   {% endif %}
