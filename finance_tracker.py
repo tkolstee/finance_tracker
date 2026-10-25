@@ -28,12 +28,13 @@ from users import (
     create_user, get_user_by_id, get_user_by_username, verify_password,
     list_users, update_password, set_admin, rename_user, delete_user,
     generate_random_password, user_data_dir, user_db_path,
+    create_api_key, list_api_keys, delete_api_key, get_user_by_api_key,
 )
 from auth import (
-    require_auth, require_admin,
+    require_auth, require_admin, require_session,
     generate_token, decode_token,
     cookie_kwargs, clear_cookie_kwargs,
-    init_secret,
+    init_secret, init_api_key_resolver,
 )
 
 app = Flask(__name__)
@@ -81,6 +82,17 @@ def get_user_db():
     ensure_schema(c)
     g._user_db = c
     return c
+
+
+def _resolve_api_key(raw_key):
+    uc = get_users_conn()
+    try:
+        return get_user_by_api_key(uc, raw_key)
+    finally:
+        uc.close()
+
+
+init_api_key_resolver(_resolve_api_key)
 
 
 @app.teardown_appcontext
@@ -352,6 +364,54 @@ def api_logout():
 @require_auth
 def api_me():
     return jsonify({"user_id": g.user_id, "username": g.username, "is_admin": g.is_admin})
+
+
+# ──────────────────────────── API key routes ─────────────────────────────────
+# Keys are managed only from a logged-in session (require_session), never with
+# another API key. Use a key as:  Authorization: Bearer ftk_…
+
+@app.route("/keys")
+def keys_page():
+    token   = request.cookies.get("ft_token")
+    payload = decode_token(token) if token else None
+    if not payload:
+        return redirect(url_for("login_page"))
+    return render_template("keys.html", current_user=payload["username"])
+
+
+@app.route("/api/keys")
+@require_session
+def api_list_keys():
+    uc   = get_users_conn()
+    keys = list_api_keys(uc, g.user_id)
+    uc.close()
+    return jsonify(keys)
+
+
+@app.route("/api/keys", methods=["POST"])
+@require_session
+def api_create_key():
+    d    = request.get_json() or {}
+    name = str(d.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    if len(name) > 100:
+        return jsonify({"error": "name must be 100 characters or fewer"}), 400
+    uc = get_users_conn()
+    key, raw_key = create_api_key(uc, g.user_id, name)
+    uc.close()
+    return jsonify({**key, "key": raw_key}), 201
+
+
+@app.route("/api/keys/<int:kid>", methods=["DELETE"])
+@require_session
+def api_delete_key(kid):
+    uc      = get_users_conn()
+    deleted = delete_api_key(uc, g.user_id, kid)
+    uc.close()
+    if not deleted:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"deleted": kid})
 
 
 # ──────────────────────────── Admin UI route ─────────────────────────────────
