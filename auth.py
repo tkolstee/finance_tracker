@@ -4,6 +4,11 @@ JWT authentication helpers for Finance Tracker.
 Tokens are issued as HttpOnly cookies (ft_token) on login and accepted from
 either the cookie or an Authorization: Bearer <token> header.
 
+API keys (ftk_…) are also accepted as Authorization: Bearer <key>. A key acts
+as its owning user but never carries admin rights, and cannot be used to manage
+API keys (see require_session). Call init_api_key_resolver() at startup with a
+function mapping a raw key to its user dict (or None).
+
 Call init_secret(data_dir) once at startup (before handling any requests) to
 load or generate a persistent signing key stored in DATA_DIR/secret.key.
 This survives both server restarts and gunicorn's master→worker fork.
@@ -19,6 +24,8 @@ from flask import request, jsonify, g
 _SECRET: str = ""   # set by init_secret() before first request
 _TTL:    int = int(os.environ.get("FINANCE_TRACKER_TOKEN_TTL", 86400 * 7))  # 7 days
 _COOKIE: str = "ft_token"
+_API_KEY_PREFIX: str = "ftk_"
+_api_key_resolver = None   # set by init_api_key_resolver()
 
 
 # ── startup initialisation ────────────────────────────────────────────────────
@@ -46,6 +53,12 @@ def init_secret(data_dir: str) -> None:
         os.makedirs(data_dir, exist_ok=True)
         with open(secret_path, "w") as fh:
             fh.write(_SECRET)
+
+
+def init_api_key_resolver(resolver) -> None:
+    """Register resolver(raw_key) -> user dict with api_key_id, or None."""
+    global _api_key_resolver
+    _api_key_resolver = resolver
 
 
 def _get_secret() -> str:
@@ -88,20 +101,42 @@ def _extract_token() -> str | None:
     return None
 
 
+def _api_key_payload(raw_key: str) -> dict | None:
+    user = _api_key_resolver(raw_key) if _api_key_resolver else None
+    if not user:
+        return None
+    return {
+        "sub":        str(user["id"]),
+        "username":   user["username"],
+        "is_admin":   False,   # API keys never grant admin rights
+        "api_key_id": user["api_key_id"],
+    }
+
+
+def _authenticate() -> dict | None:
+    """Return the auth payload for this request (JWT or API key), or None."""
+    token = _extract_token()
+    if not token:
+        return None
+    if token.startswith(_API_KEY_PREFIX):
+        return _api_key_payload(token)
+    return decode_token(token)
+
+
 def _set_g(payload: dict) -> None:
-    g.user_id  = int(payload["sub"])
-    g.username = payload["username"]
-    g.is_admin = payload["is_admin"]
+    g.user_id    = int(payload["sub"])
+    g.username   = payload["username"]
+    g.is_admin   = payload["is_admin"]
+    g.api_key_id = payload.get("api_key_id")
 
 
 # ── decorators ────────────────────────────────────────────────────────────────
 
 def require_auth(f):
-    """Require a valid JWT. Sets g.user_id, g.username, g.is_admin."""
+    """Require a valid JWT or API key. Sets g.user_id, g.username, g.is_admin, g.api_key_id."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        token   = _extract_token()
-        payload = decode_token(token) if token else None
+        payload = _authenticate()
         if not payload:
             return jsonify({"error": "Not authenticated"}), 401
         _set_g(payload)
@@ -110,15 +145,31 @@ def require_auth(f):
 
 
 def require_admin(f):
-    """Require a valid JWT with is_admin=True."""
+    """Require a valid JWT with is_admin=True (API keys are never admin)."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        token   = _extract_token()
-        payload = decode_token(token) if token else None
+        payload = _authenticate()
         if not payload:
             return jsonify({"error": "Not authenticated"}), 401
         if not payload.get("is_admin"):
             return jsonify({"error": "Admin access required"}), 403
+        _set_g(payload)
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_session(f):
+    """Require a logged-in user session (JWT), rejecting API keys.
+
+    Used for API-key management, so a leaked key cannot mint or revoke keys.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        payload = _authenticate()
+        if not payload:
+            return jsonify({"error": "Not authenticated"}), 401
+        if payload.get("api_key_id"):
+            return jsonify({"error": "API keys cannot be used for this endpoint"}), 403
         _set_g(payload)
         return f(*args, **kwargs)
     return decorated
