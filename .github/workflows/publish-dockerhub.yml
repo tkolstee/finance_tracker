@@ -41,10 +41,15 @@ jobs:
           tags: finance_tracker:smoke
           cache-to: type=gha,mode=max
 
+      # Started the way dockerhost runs it: explicit PATH and a gunicorn command
+      # override (both carried over when a container is recreated).
       - name: Smoke test image
         run: |
           docker run -d --name smoke -p 5757:5757 \
-            -e ADMIN_USER=smoke -e ADMIN_PASSWORD=smoke-pass finance_tracker:smoke
+            -e ADMIN_USER=smoke -e ADMIN_PASSWORD=smoke-pass \
+            -e PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            finance_tracker:smoke \
+            gunicorn --bind 0.0.0.0:5757 --worker-class gthread --workers 1 --threads 4 --timeout 60 wsgi:app
           for i in $(seq 1 30); do
             curl -sf -o /dev/null http://localhost:5757/login && break
             sleep 1
