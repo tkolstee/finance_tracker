@@ -3,6 +3,7 @@ name: Build and Push Docker image
 on:
   push:
     branches: [main, test]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -22,15 +23,51 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Read app version
+        id: version
+        run: echo "APP_VERSION=$(tr -d '\n' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Smoke test (every run, before anything is published): build the amd64
+      # image locally, start it, and check that the app serves and a login works.
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          platforms: linux/amd64
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
+          tags: finance_tracker:smoke
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        run: |
+          docker run -d --name smoke -p 5757:5757 \
+            -e ADMIN_USER=smoke -e ADMIN_PASSWORD=smoke-pass finance_tracker:smoke
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://localhost:5757/login && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://localhost:5757/login
+          curl -sf -c jar -H 'Content-Type: application/json' \
+            -d '{"username":"smoke","password":"smoke-pass"}' http://localhost:5757/api/login
+          curl -sf -b jar http://localhost:5757/api/meta
+          echo
+          if docker exec smoke sh -c 'command -v pip || python -c "import pip"' 2>/dev/null; then
+            echo "pip should not be present in the runtime image"; exit 1
+          fi
+
+      - name: Show container logs
+        if: always()
+        run: docker logs smoke || true
+
       - name: Log in to DockerHub
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Read app version
-        id: version
-        run: echo "APP_VERSION=$(tr -d '\n' < VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Determine branch tag
         id: branch-tag
@@ -50,14 +87,16 @@ jobs:
             type=raw,value=${{ steps.version.outputs.APP_VERSION }},enable=${{ github.ref_name == 'main' }}
             type=raw,value=${{ steps.branch-tag.outputs.TAG }}
 
+      # Pull requests build every platform but publish nothing.
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           build-args: |
             APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
