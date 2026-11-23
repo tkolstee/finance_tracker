@@ -20,7 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # The base image's own pip and ensurepip wheels are never used at runtime;
 # removing them drops them from the image's vulnerability surface.
-RUN python -m pip uninstall -y pip \
+# Pick up Alpine security fixes published since the base image was built (OpenSSL, zlib); the CI scan fails the build on high findings otherwise.
+RUN apk upgrade --no-cache \
+ && python -m pip uninstall -y pip \
  && rm -rf /usr/local/lib/python3.15/ensurepip \
  && mkdir -p /data
 
